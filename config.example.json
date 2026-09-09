@@ -1,0 +1,66 @@
+{
+  "retry": { "max_attempts": 3, "base_delay_ms": 500 },
+  "channels": {
+    "log": { "type": "console" },
+    "hook": { "type": "webhook", "url": "https://example.com/hook", "timeout_ms": 5000 },
+    "ops-mail": {
+      "type": "email",
+      "smtp_host": "smtp.example.com",
+      "port": 587,
+      "from": "roled@example.com",
+      "to": ["oncall@example.com"],
+      "username": "roled@example.com",
+      "password_env": "SMTP_PASS"
+    },
+    "sms": {
+      "type": "smsgate",
+      "base_url": "http://127.0.0.1:8080/3rdparty/v1",
+      "username": "sms-user",
+      "password_env": "SMSGATE_PASS",
+      "recipients": ["+15551234567"],
+      "timeout_ms": 5000
+    }
+  },
+  "roles": {
+    "pong_server": {
+      "enabled": true,
+      "listen": ":9000",
+      "read_timeout_ms": 2000
+    },
+    "ping_monitor": {
+      "enabled": true,
+      "targets": [
+        {
+          "target": "10.0.0.5:9000",
+          "interval_s": 30,
+          "timeout_ms": 2000,
+          "failure_threshold": 3,
+          "notify": ["hook", "log"]
+        },
+        {
+          "target": "10.0.0.6:9000",
+          "interval_s": 15,
+          "timeout_ms": 1000,
+          "failure_threshold": 2,
+          "notify": ["log"]
+        }
+      ]
+    },
+    "internet_check": {
+      "enabled": true,
+      "sites": ["https://www.google.com", "https://www.cloudflare.com"],
+      "interval_s": 60,
+      "timeout_ms": 5000,
+      "failure_threshold": 3,
+      "notify": ["hook"]
+    },
+    "speed_check": {
+      "enabled": true,
+      "interval_s": 3600,
+      "threshold_mbps": 50,
+      "binary": "speedtest",
+      "failure_threshold": 1,
+      "notify": ["ops-mail", "log"]
+    }
+  }
+}
