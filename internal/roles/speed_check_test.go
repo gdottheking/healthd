@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"connection_monitor/internal/monitor"
 )
 
 // sampleOoklaJSON reports download.bandwidth in bytes/sec.
@@ -22,7 +24,7 @@ func fakeRunner(out string, err error) RunnerFunc {
 }
 
 func TestSpeedCheckParsesMbps(t *testing.T) {
-	sc := NewSpeedCheck("speedtest", time.Second, 50, 1, nil, &fakeNotifier{}, fakeRunner(sampleOoklaJSON, nil), testLogger())
+	sc := NewSpeedCheck("speedtest", time.Second, 50, monitor.Config{FailureThreshold: 1}, nil, &fakeNotifier{}, fakeRunner(sampleOoklaJSON, nil), nil, testLogger())
 	mbps, err := sc.measure(context.Background())
 	if err != nil {
 		t.Fatalf("measure: %v", err)
@@ -35,7 +37,7 @@ func TestSpeedCheckParsesMbps(t *testing.T) {
 func TestSpeedCheckBelowThresholdAlerts(t *testing.T) {
 	fn := &fakeNotifier{}
 	// 100 Mbps measured, threshold 200 -> failing check.
-	sc := NewSpeedCheck("speedtest", time.Second, 200, 2, []string{"log"}, fn, fakeRunner(sampleOoklaJSON, nil), testLogger())
+	sc := NewSpeedCheck("speedtest", time.Second, 200, monitor.Config{FailureThreshold: 2}, []string{"log"}, fn, fakeRunner(sampleOoklaJSON, nil), nil, testLogger())
 	ctx := context.Background()
 	sc.runCheck(ctx) // fail 1
 	if len(fn.snapshot()) != 0 {
@@ -51,7 +53,7 @@ func TestSpeedCheckBelowThresholdAlerts(t *testing.T) {
 func TestSpeedCheckAtOrAboveThresholdSucceeds(t *testing.T) {
 	fn := &fakeNotifier{}
 	// 100 Mbps measured, threshold 100 -> at threshold = success.
-	sc := NewSpeedCheck("speedtest", time.Second, 100, 1, []string{"log"}, fn, fakeRunner(sampleOoklaJSON, nil), testLogger())
+	sc := NewSpeedCheck("speedtest", time.Second, 100, monitor.Config{FailureThreshold: 1}, []string{"log"}, fn, fakeRunner(sampleOoklaJSON, nil), nil, testLogger())
 	sc.runCheck(context.Background())
 	if len(fn.snapshot()) != 0 {
 		t.Fatalf("at-threshold should be success, got alerts %+v", fn.snapshot())
@@ -61,7 +63,7 @@ func TestSpeedCheckAtOrAboveThresholdSucceeds(t *testing.T) {
 func TestSpeedCheckRunnerErrorIsFailure(t *testing.T) {
 	fn := &fakeNotifier{}
 	// Simulates a missing binary / exec error.
-	sc := NewSpeedCheck("speedtest", time.Second, 50, 1, []string{"log"}, fn, fakeRunner("", errors.New("exec: \"speedtest\": not found")), testLogger())
+	sc := NewSpeedCheck("speedtest", time.Second, 50, monitor.Config{FailureThreshold: 1}, []string{"log"}, fn, fakeRunner("", errors.New("exec: \"speedtest\": not found")), nil, testLogger())
 	// Must not panic and must record a failing check that fires an alert.
 	sc.runCheck(context.Background())
 	alerts := fn.snapshot()
@@ -71,14 +73,14 @@ func TestSpeedCheckRunnerErrorIsFailure(t *testing.T) {
 }
 
 func TestSpeedCheckMalformedJSONIsError(t *testing.T) {
-	sc := NewSpeedCheck("speedtest", time.Second, 50, 1, nil, &fakeNotifier{}, fakeRunner("{bad", nil), testLogger())
+	sc := NewSpeedCheck("speedtest", time.Second, 50, monitor.Config{FailureThreshold: 1}, nil, &fakeNotifier{}, fakeRunner("{bad", nil), nil, testLogger())
 	if _, err := sc.measure(context.Background()); err == nil {
 		t.Fatal("expected parse error for malformed JSON")
 	}
 }
 
 func TestSpeedCheckDefaultRunnerSet(t *testing.T) {
-	sc := NewSpeedCheck("speedtest", time.Second, 50, 1, nil, &fakeNotifier{}, nil, testLogger())
+	sc := NewSpeedCheck("speedtest", time.Second, 50, monitor.Config{FailureThreshold: 1}, nil, &fakeNotifier{}, nil, nil, testLogger())
 	if sc.runner == nil {
 		t.Fatal("expected default runner to be set when nil passed")
 	}

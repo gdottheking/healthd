@@ -24,6 +24,7 @@ type SpeedCheck struct {
 	channels  []string
 	notifier  Notifier
 	sm        *monitor.StateMachine
+	handle    *monitor.Handle
 	runner    RunnerFunc
 	logger    *slog.Logger
 }
@@ -36,8 +37,9 @@ type ooklaResult struct {
 }
 
 // NewSpeedCheck builds a SpeedCheck. A nil runner defaults to executing the
-// configured binary with the license/GDPR auto-accept flags.
-func NewSpeedCheck(binary string, interval time.Duration, threshold float64, failureThreshold int, channels []string, notifier Notifier, runner RunnerFunc, logger *slog.Logger) *SpeedCheck {
+// configured binary with the license/GDPR auto-accept flags. reg may be nil,
+// in which case fleet-wide status snapshots are not logged.
+func NewSpeedCheck(binary string, interval time.Duration, threshold float64, mon monitor.Config, channels []string, notifier Notifier, runner RunnerFunc, reg *monitor.Registry, logger *slog.Logger) *SpeedCheck {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -47,7 +49,8 @@ func NewSpeedCheck(binary string, interval time.Duration, threshold float64, fai
 		threshold: threshold,
 		channels:  channels,
 		notifier:  notifier,
-		sm:        monitor.New(failureThreshold),
+		sm:        monitor.NewWithConfig(mon),
+		handle:    reg.Register("speed_check"),
 		runner:    runner,
 		logger:    logger,
 	}
@@ -87,7 +90,6 @@ func (s *SpeedCheck) runCheck(ctx context.Context) {
 	case err != nil:
 		success = false
 		detail = fmt.Sprintf("speedtest failed: %v", err)
-		s.logger.Warn("speed_check failed", slog.Any("error", err))
 	case mbps < s.threshold:
 		success = false
 		detail = fmt.Sprintf("download %.2f Mbps below threshold %.2f Mbps", mbps, s.threshold)
@@ -95,7 +97,29 @@ func (s *SpeedCheck) runCheck(ctx context.Context) {
 		success = true
 		detail = fmt.Sprintf("download %.2f Mbps at/above threshold %.2f Mbps", mbps, s.threshold)
 	}
+	// Log the outcome of every execution, not just state transitions. A failing
+	// check logs at WARN (with the underlying error, if any); a passing one at
+	// INFO.
+	level := slog.LevelInfo
+	if !success {
+		level = slog.LevelWarn
+	}
+	attrs := []slog.Attr{
+		slog.Float64("mbps", mbps),
+		slog.Float64("threshold_mbps", s.threshold),
+		slog.Bool("success", success),
+		slog.String("detail", detail),
+	}
+	if err != nil {
+		attrs = append(attrs, slog.Any("error", err))
+	}
+	s.logger.LogAttrs(ctx, level, "speed_check result", attrs...)
+
 	ev := s.sm.Observe(success)
+	s.handle.Update(s.sm)
+	if ev != monitor.None {
+		s.handle.LogSnapshot(s.logger)
+	}
 	dispatchEvent(ctx, s.notifier, s.channels, "speed_check", detail, ev, s.sm.ConsecutiveFailures())
 }
 

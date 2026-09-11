@@ -6,13 +6,15 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"connection_monitor/internal/monitor"
 )
 
 func TestInternetCheckRoundRobin(t *testing.T) {
 	c := NewInternetCheck(
 		[]string{"a", "b", "c"},
-		time.Second, time.Second, 3,
-		nil, &fakeNotifier{}, http.DefaultClient, testLogger(),
+		time.Second, time.Second, monitor.Config{FailureThreshold: 3},
+		nil, &fakeNotifier{}, http.DefaultClient, nil, testLogger(),
 	)
 	want := []string{"a", "b", "c", "a", "b"}
 	for i, w := range want {
@@ -33,8 +35,8 @@ func TestInternetCheckSuccessAndFailure(t *testing.T) {
 	t.Cleanup(badSrv.Close)
 
 	c := NewInternetCheck(
-		[]string{okSrv.URL}, time.Second, time.Second, 3,
-		nil, &fakeNotifier{}, okSrv.Client(), testLogger(),
+		[]string{okSrv.URL}, time.Second, time.Second, monitor.Config{FailureThreshold: 3},
+		nil, &fakeNotifier{}, okSrv.Client(), nil, testLogger(),
 	)
 	if err := c.checkSite(context.Background(), okSrv.URL); err != nil {
 		t.Fatalf("2xx should succeed: %v", err)
@@ -52,8 +54,8 @@ func TestInternetCheckFeedsStateMachine(t *testing.T) {
 
 	fn := &fakeNotifier{}
 	c := NewInternetCheck(
-		[]string{badSrv.URL}, time.Second, time.Second, 2,
-		[]string{"log"}, fn, badSrv.Client(), testLogger(),
+		[]string{badSrv.URL}, time.Second, time.Second, monitor.Config{FailureThreshold: 2},
+		[]string{"log"}, fn, badSrv.Client(), nil, testLogger(),
 	)
 	ctx := context.Background()
 	c.runCheck(ctx) // fail 1
@@ -84,8 +86,8 @@ func TestInternetCheckRecovery(t *testing.T) {
 
 	fn := &fakeNotifier{}
 	c := NewInternetCheck(
-		[]string{srv.URL}, time.Second, time.Second, 1,
-		[]string{"log"}, fn, srv.Client(), testLogger(),
+		[]string{srv.URL}, time.Second, time.Second, monitor.Config{FailureThreshold: 1},
+		[]string{"log"}, fn, srv.Client(), nil, testLogger(),
 	)
 	ctx := context.Background()
 	c.runCheck(ctx) // fail -> UNHEALTHY

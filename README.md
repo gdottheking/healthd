@@ -41,13 +41,35 @@ All roles are optional and enabled per the config file.
 ## Alert state machine
 
 A reusable, timer-free component (`internal/monitor`) drives ping_monitor,
-internet_check, and speed_check:
+internet_check, and speed_check. Each monitored unit picks one of two triggers:
+
+**`consecutive`** (default):
 
 - HEALTHY, after `failure_threshold` consecutive failing checks, transitions to
   UNHEALTHY and signals `AlertUnhealthy` exactly once.
 - UNHEALTHY, on the first successful check, transitions to HEALTHY and signals
   `RecoveryHealthy` exactly once.
-- No repeat signals while remaining in the same state.
+
+**`availability`** (rolling window):
+
+- Each unit keeps a rolling window of the last `window_size` check results.
+  Availability is the percentage of successes in the window.
+- Once the window is full, HEALTHY transitions to UNHEALTHY when availability
+  drops below `min_availability`, and back to HEALTHY when it climbs to or above
+  it. During warm-up (before the window fills) the unit stays HEALTHY.
+
+No repeat signals fire while remaining in the same state, regardless of trigger.
+
+### Rolling window and last-success (all roles)
+
+Every unit — each ping target, internet_check, and speed_check — tracks a
+rolling availability window (`window_size` samples, defaulting to 20 when
+omitted) and the timestamp of its last successful check, in both trigger modes.
+Whenever any unit changes state, a single `status snapshot` line is logged
+listing every unit across all roles with its current state, availability
+percentage, consecutive-failure count, and last-success time. `speed_check`
+additionally logs a `speed_check result` line after every execution (measured
+Mbps, threshold, pass/fail).
 
 ## Notifications
 
@@ -132,7 +154,10 @@ Each `targets[]` entry:
 | `target`            | string   | Required, `host:port`. |
 | `interval_s`        | int      | Required, > 0. |
 | `timeout_ms`        | int      | Required, > 0. |
-| `failure_threshold` | int      | >= 1 (defaults to 1 if omitted). |
+| `failure_threshold` | int      | >= 1 (defaults to 1 if omitted). Used by the `consecutive` trigger. |
+| `trigger`           | string   | `consecutive` (default) or `availability`. |
+| `window_size`      | int      | Rolling-window length. Defaults to 20 when omitted, so availability is always tracked and shown in the status snapshot. Must be > 0 for `availability`. |
+| `min_availability` | number   | Availability percentage (0–100) below which `availability` alerts. Required for `availability`. |
 | `notify`            | string[] | Channel names; each must exist in `channels`. |
 
 Example:
@@ -155,7 +180,10 @@ Example:
 | `sites`             | string[] | Required, non-empty. |
 | `interval_s`        | int      | Required, > 0. |
 | `timeout_ms`        | int      | Required, > 0. |
-| `failure_threshold` | int      | Required, >= 1 (defaults to 1 if omitted). |
+| `failure_threshold` | int      | >= 1 (defaults to 1 if omitted). Used by the `consecutive` trigger. |
+| `trigger`           | string   | `consecutive` (default) or `availability`. |
+| `window_size`      | int      | See ping_monitor; defaults to 20 (availability always tracked). |
+| `min_availability` | number   | Availability percentage (0–100); required for `availability`. |
 | `notify`            | string[] | Channel names; each must exist in `channels`. |
 
 ### `roles.speed_check`
@@ -166,7 +194,10 @@ Example:
 | `interval_s`        | int      | Required, > 0. |
 | `threshold_mbps`    | number   | Required, > 0. |
 | `binary`            | string   | Path to speedtest CLI (default `speedtest`). |
-| `failure_threshold` | int      | >= 1 (defaults to 1 if omitted). |
+| `failure_threshold` | int      | >= 1 (defaults to 1 if omitted). Used by the `consecutive` trigger. |
+| `trigger`           | string   | `consecutive` (default) or `availability`. |
+| `window_size`      | int      | See ping_monitor; defaults to 20 (availability always tracked). |
+| `min_availability` | number   | Availability percentage (0–100); required for `availability`. |
 | `notify`            | string[] | Channel names; each must exist in `channels`. |
 
 Validation aborts startup with a clear error if a required field is missing or

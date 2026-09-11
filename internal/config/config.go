@@ -17,6 +17,19 @@ const (
 	ChannelSMSGate = "smsgate"
 )
 
+// Alert triggers. TriggerConsecutive alerts after failure_threshold consecutive
+// failures; TriggerAvailability alerts when rolling-window availability drops
+// below min_availability.
+const (
+	TriggerConsecutive  = "consecutive"
+	TriggerAvailability = "availability"
+)
+
+// defaultWindowSize is the rolling-window length applied to any unit that omits
+// window_size, so an availability rate is always calculated and published in
+// the status snapshot regardless of trigger mode.
+const defaultWindowSize = 20
+
 // Retry configures the dispatcher's retry-with-backoff behavior.
 type Retry struct {
 	MaxAttempts int `json:"max_attempts"`
@@ -62,6 +75,9 @@ type PingTarget struct {
 	IntervalS        int      `json:"interval_s"`
 	TimeoutMS        int      `json:"timeout_ms"`
 	FailureThreshold int      `json:"failure_threshold"`
+	Trigger          string   `json:"trigger,omitempty"`
+	WindowSize       int      `json:"window_size,omitempty"`
+	MinAvailability  float64  `json:"min_availability,omitempty"`
 	Notify           []string `json:"notify"`
 }
 
@@ -79,6 +95,9 @@ type InternetCheck struct {
 	IntervalS        int      `json:"interval_s"`
 	TimeoutMS        int      `json:"timeout_ms"`
 	FailureThreshold int      `json:"failure_threshold"`
+	Trigger          string   `json:"trigger,omitempty"`
+	WindowSize       int      `json:"window_size,omitempty"`
+	MinAvailability  float64  `json:"min_availability,omitempty"`
 	Notify           []string `json:"notify"`
 }
 
@@ -89,6 +108,9 @@ type SpeedCheck struct {
 	ThresholdMbps    float64  `json:"threshold_mbps"`
 	Binary           string   `json:"binary"`
 	FailureThreshold int      `json:"failure_threshold"`
+	Trigger          string   `json:"trigger,omitempty"`
+	WindowSize       int      `json:"window_size,omitempty"`
+	MinAvailability  float64  `json:"min_availability,omitempty"`
 	Notify           []string `json:"notify"`
 }
 
@@ -147,17 +169,36 @@ func (c *Config) applyDefaults() {
 		}
 	}
 	// failure_threshold defaults to 1 where a role uses the state machine but
-	// omits it; validation still enforces >=1 when explicitly set.
+	// omits it; validation still enforces >=1 when explicitly set. trigger
+	// defaults to consecutive; window_size is defaulted in both modes so the
+	// availability rate is always tracked.
 	for i := range c.Roles.PingMonitor.Targets {
-		if c.Roles.PingMonitor.Targets[i].FailureThreshold == 0 {
-			c.Roles.PingMonitor.Targets[i].FailureThreshold = 1
+		t := &c.Roles.PingMonitor.Targets[i]
+		if t.FailureThreshold == 0 {
+			t.FailureThreshold = 1
 		}
+		applyTriggerDefaults(&t.Trigger, &t.WindowSize)
 	}
 	if c.Roles.InternetCheck.FailureThreshold == 0 {
 		c.Roles.InternetCheck.FailureThreshold = 1
 	}
+	applyTriggerDefaults(&c.Roles.InternetCheck.Trigger, &c.Roles.InternetCheck.WindowSize)
 	if c.Roles.SpeedCheck.FailureThreshold == 0 {
 		c.Roles.SpeedCheck.FailureThreshold = 1
+	}
+	applyTriggerDefaults(&c.Roles.SpeedCheck.Trigger, &c.Roles.SpeedCheck.WindowSize)
+}
+
+// applyTriggerDefaults fills the trigger mode and a default rolling-window size
+// when omitted. The window is defaulted in both modes so the availability rate
+// is always tracked and published, not only when the availability trigger is
+// used.
+func applyTriggerDefaults(trigger *string, windowSize *int) {
+	if *trigger == "" {
+		*trigger = TriggerConsecutive
+	}
+	if *windowSize == 0 {
+		*windowSize = defaultWindowSize
 	}
 }
 
@@ -262,6 +303,9 @@ func (c *Config) validateRoles() error {
 			if tgt.FailureThreshold < 1 {
 				return fmt.Errorf("role ping_monitor %s: failure_threshold must be >= 1", who)
 			}
+			if err := validateTrigger("ping_monitor "+who, tgt.Trigger, tgt.WindowSize, tgt.MinAvailability); err != nil {
+				return err
+			}
 			if err := c.checkNotify("ping_monitor "+who, tgt.Notify); err != nil {
 				return err
 			}
@@ -282,6 +326,9 @@ func (c *Config) validateRoles() error {
 		if r.FailureThreshold < 1 {
 			return fmt.Errorf("role internet_check: failure_threshold must be >= 1")
 		}
+		if err := validateTrigger("internet_check", r.Trigger, r.WindowSize, r.MinAvailability); err != nil {
+			return err
+		}
 		if err := c.checkNotify("internet_check", r.Notify); err != nil {
 			return err
 		}
@@ -298,11 +345,36 @@ func (c *Config) validateRoles() error {
 		if r.FailureThreshold < 1 {
 			return fmt.Errorf("role speed_check: failure_threshold must be >= 1")
 		}
+		if err := validateTrigger("speed_check", r.Trigger, r.WindowSize, r.MinAvailability); err != nil {
+			return err
+		}
 		if err := c.checkNotify("speed_check", r.Notify); err != nil {
 			return err
 		}
 	}
 
+	return nil
+}
+
+// validateTrigger checks the rolling-window/availability fields for one role.
+// Defaults are applied before validation, so an empty trigger is treated as
+// consecutive here as a safety net.
+func validateTrigger(role, trigger string, windowSize int, minAvailability float64) error {
+	switch trigger {
+	case "", TriggerConsecutive:
+		if windowSize < 0 {
+			return fmt.Errorf("role %s: window_size must be >= 0", role)
+		}
+	case TriggerAvailability:
+		if windowSize <= 0 {
+			return fmt.Errorf("role %s: window_size must be > 0 when trigger is %q", role, TriggerAvailability)
+		}
+		if minAvailability <= 0 || minAvailability > 100 {
+			return fmt.Errorf("role %s: min_availability must be in (0, 100] when trigger is %q", role, TriggerAvailability)
+		}
+	default:
+		return fmt.Errorf("role %s: unknown trigger %q", role, trigger)
+	}
 	return nil
 }
 

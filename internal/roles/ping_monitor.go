@@ -17,11 +17,11 @@ import (
 
 // PingTarget describes one independent ping monitor.
 type PingTarget struct {
-	Target           string
-	Interval         time.Duration
-	Timeout          time.Duration
-	FailureThreshold int
-	Channels         []string
+	Target   string
+	Interval time.Duration
+	Timeout  time.Duration
+	Channels []string
+	Mon      monitor.Config
 }
 
 // PingMonitor runs one independent monitor per configured target, each with
@@ -31,8 +31,9 @@ type PingMonitor struct {
 	logger   *slog.Logger
 }
 
-// NewPingMonitor builds a PingMonitor from a set of independent targets.
-func NewPingMonitor(targets []PingTarget, notifier Notifier, logger *slog.Logger) *PingMonitor {
+// NewPingMonitor builds a PingMonitor from a set of independent targets. reg
+// may be nil, in which case fleet-wide status snapshots are not logged.
+func NewPingMonitor(targets []PingTarget, notifier Notifier, reg *monitor.Registry, logger *slog.Logger) *PingMonitor {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -44,7 +45,8 @@ func NewPingMonitor(targets []PingTarget, notifier Notifier, logger *slog.Logger
 			timeout:  t.Timeout,
 			channels: t.Channels,
 			notifier: notifier,
-			sm:       monitor.New(t.FailureThreshold),
+			sm:       monitor.NewWithConfig(t.Mon),
+			handle:   reg.Register("ping_monitor:" + t.Target),
 			logger:   logger,
 		})
 	}
@@ -75,6 +77,7 @@ type pingTargetMonitor struct {
 	channels []string
 	notifier Notifier
 	sm       *monitor.StateMachine
+	handle   *monitor.Handle
 	logger   *slog.Logger
 
 	idCounter atomic.Uint64
@@ -103,6 +106,10 @@ func (m *pingTargetMonitor) runCheck(ctx context.Context) {
 		m.logger.Warn("ping_monitor check failed", slog.String("target", m.target), slog.Any("error", err))
 	}
 	ev := m.sm.Observe(success)
+	m.handle.Update(m.sm)
+	if ev != monitor.None {
+		m.handle.LogSnapshot(m.logger)
+	}
 	dispatchEvent(ctx, m.notifier, m.channels, "ping_monitor", detail, ev, m.sm.ConsecutiveFailures())
 }
 

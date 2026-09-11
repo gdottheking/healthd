@@ -20,6 +20,7 @@ type InternetCheck struct {
 	channels []string
 	notifier Notifier
 	sm       *monitor.StateMachine
+	handle   *monitor.Handle
 	client   *http.Client
 	logger   *slog.Logger
 
@@ -27,8 +28,9 @@ type InternetCheck struct {
 }
 
 // NewInternetCheck builds an InternetCheck. A nil client uses a default client
-// with the given timeout.
-func NewInternetCheck(sites []string, interval, timeout time.Duration, failureThreshold int, channels []string, notifier Notifier, client *http.Client, logger *slog.Logger) *InternetCheck {
+// with the given timeout. reg may be nil, in which case fleet-wide status
+// snapshots are not logged.
+func NewInternetCheck(sites []string, interval, timeout time.Duration, mon monitor.Config, channels []string, notifier Notifier, client *http.Client, reg *monitor.Registry, logger *slog.Logger) *InternetCheck {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -41,7 +43,8 @@ func NewInternetCheck(sites []string, interval, timeout time.Duration, failureTh
 		timeout:  timeout,
 		channels: channels,
 		notifier: notifier,
-		sm:       monitor.New(failureThreshold),
+		sm:       monitor.NewWithConfig(mon),
+		handle:   reg.Register("internet_check"),
 		client:   client,
 		logger:   logger,
 	}
@@ -79,6 +82,10 @@ func (c *InternetCheck) runCheck(ctx context.Context) {
 		c.logger.Warn("internet_check failed", slog.String("site", site), slog.Any("error", err))
 	}
 	ev := c.sm.Observe(success)
+	c.handle.Update(c.sm)
+	if ev != monitor.None {
+		c.handle.LogSnapshot(c.logger)
+	}
 	dispatchEvent(ctx, c.notifier, c.channels, "internet_check", detail, ev, c.sm.ConsecutiveFailures())
 }
 

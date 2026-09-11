@@ -80,9 +80,9 @@ func TestPingMonitorMultipleTargetsIndependent(t *testing.T) {
 	// interrupted by shutdown cancellation cannot spuriously trip it; over the
 	// run it stays healthy (successes reset the counter).
 	pm := NewPingMonitor([]PingTarget{
-		{Target: liveAddr, Interval: 50 * time.Millisecond, Timeout: 500 * time.Millisecond, FailureThreshold: 5, Channels: []string{"log"}},
-		{Target: "127.0.0.1:1", Interval: 50 * time.Millisecond, Timeout: 200 * time.Millisecond, FailureThreshold: 2, Channels: []string{"log"}},
-	}, fn, testLogger())
+		{Target: liveAddr, Interval: 50 * time.Millisecond, Timeout: 500 * time.Millisecond, Channels: []string{"log"}, Mon: monitor.Config{FailureThreshold: 5}},
+		{Target: "127.0.0.1:1", Interval: 50 * time.Millisecond, Timeout: 200 * time.Millisecond, Channels: []string{"log"}, Mon: monitor.Config{FailureThreshold: 2}},
+	}, fn, nil, testLogger())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

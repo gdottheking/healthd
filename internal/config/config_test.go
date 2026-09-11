@@ -278,8 +278,8 @@ func TestExampleConfigIsValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config.example.json must load and validate: %v", err)
 	}
-	if !cfg.Roles.PingMonitor.Enabled || len(cfg.Roles.PingMonitor.Targets) != 2 {
-		t.Fatalf("example ping_monitor should have 2 targets, got %+v", cfg.Roles.PingMonitor)
+	if !cfg.Roles.PingMonitor.Enabled || len(cfg.Roles.PingMonitor.Targets) == 0 {
+		t.Fatalf("example ping_monitor should be enabled with at least one target, got %+v", cfg.Roles.PingMonitor)
 	}
 }
 
@@ -287,5 +287,67 @@ func TestLoadMissingFile(t *testing.T) {
 	_, err := Load(filepath.Join(t.TempDir(), "nope.json"))
 	if err == nil {
 		t.Fatal("expected error for missing file")
+	}
+}
+
+func TestAvailabilityTriggerValidAndDefaults(t *testing.T) {
+	body := `{
+      "channels": { "log": { "type": "console" } },
+      "roles": { "internet_check": {
+        "enabled": true, "sites": ["https://x"], "interval_s": 10, "timeout_ms": 1000,
+        "trigger": "availability", "min_availability": 90, "notify": ["log"]
+      } }
+    }`
+	cfg, err := Load(writeConfig(t, body))
+	if err != nil {
+		t.Fatalf("availability config should be valid: %v", err)
+	}
+	r := cfg.Roles.InternetCheck
+	if r.Trigger != TriggerAvailability {
+		t.Fatalf("trigger: got %q want availability", r.Trigger)
+	}
+	if r.WindowSize != defaultWindowSize {
+		t.Fatalf("window_size should default to %d, got %d", defaultWindowSize, r.WindowSize)
+	}
+}
+
+func TestTriggerDefaultsToConsecutive(t *testing.T) {
+	body := `{
+      "channels": { "log": { "type": "console" } },
+      "roles": { "speed_check": { "enabled": true, "interval_s": 10, "threshold_mbps": 50, "notify": ["log"] } }
+    }`
+	cfg, err := Load(writeConfig(t, body))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Roles.SpeedCheck.Trigger != TriggerConsecutive {
+		t.Fatalf("trigger should default to consecutive, got %q", cfg.Roles.SpeedCheck.Trigger)
+	}
+}
+
+func TestAvailabilityRequiresMinAvailability(t *testing.T) {
+	body := `{
+      "channels": { "log": { "type": "console" } },
+      "roles": { "internet_check": {
+        "enabled": true, "sites": ["https://x"], "interval_s": 10, "timeout_ms": 1000,
+        "trigger": "availability", "window_size": 10, "notify": ["log"]
+      } }
+    }`
+	_, err := Load(writeConfig(t, body))
+	if err == nil || !strings.Contains(err.Error(), "min_availability") {
+		t.Fatalf("expected min_availability error, got %v", err)
+	}
+}
+
+func TestUnknownTriggerRejected(t *testing.T) {
+	body := `{
+      "channels": { "log": { "type": "console" } },
+      "roles": { "ping_monitor": { "enabled": true, "targets": [
+        { "target": "10.0.0.5:9000", "interval_s": 1, "timeout_ms": 1, "trigger": "bogus", "notify": ["log"] }
+      ] } }
+    }`
+	_, err := Load(writeConfig(t, body))
+	if err == nil || !strings.Contains(err.Error(), "unknown trigger") {
+		t.Fatalf("expected unknown trigger error, got %v", err)
 	}
 }

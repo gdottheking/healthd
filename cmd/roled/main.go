@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"connection_monitor/internal/config"
+	"connection_monitor/internal/monitor"
 	"connection_monitor/internal/notify"
 	"connection_monitor/internal/roles"
 )
@@ -56,7 +57,10 @@ func run(configPath string, logger *slog.Logger) error {
 		logger,
 	)
 
-	active := buildRoles(cfg, dispatcher, logger)
+	// registry collects the live status of every monitored unit across roles so
+	// a fleet-wide snapshot can be logged whenever any unit changes state.
+	registry := monitor.NewRegistry()
+	active := buildRoles(cfg, dispatcher, registry, logger)
 	if len(active) == 0 {
 		return fmt.Errorf("no roles enabled; nothing to do")
 	}
@@ -129,8 +133,22 @@ func buildChannels(cfg *config.Config, logger *slog.Logger) (map[string]notify.I
 	return out, nil
 }
 
-// buildRoles wires enabled roles against the dispatcher.
-func buildRoles(cfg *config.Config, dispatcher *notify.Dispatcher, logger *slog.Logger) map[string]role {
+// monitorConfig translates a role's config fields into a monitor.Config.
+func monitorConfig(trigger string, windowSize, failureThreshold int, minAvailability float64) monitor.Config {
+	t := monitor.TriggerConsecutive
+	if trigger == config.TriggerAvailability {
+		t = monitor.TriggerAvailability
+	}
+	return monitor.Config{
+		FailureThreshold: failureThreshold,
+		WindowSize:       windowSize,
+		Trigger:          t,
+		MinAvailability:  minAvailability,
+	}
+}
+
+// buildRoles wires enabled roles against the dispatcher and status registry.
+func buildRoles(cfg *config.Config, dispatcher *notify.Dispatcher, registry *monitor.Registry, logger *slog.Logger) map[string]role {
 	active := make(map[string]role)
 
 	if cfg.Roles.PongServer.Enabled {
@@ -146,14 +164,14 @@ func buildRoles(cfg *config.Config, dispatcher *notify.Dispatcher, logger *slog.
 		targets := make([]roles.PingTarget, 0, len(cfg.Roles.PingMonitor.Targets))
 		for _, t := range cfg.Roles.PingMonitor.Targets {
 			targets = append(targets, roles.PingTarget{
-				Target:           t.Target,
-				Interval:         time.Duration(t.IntervalS) * time.Second,
-				Timeout:          time.Duration(t.TimeoutMS) * time.Millisecond,
-				FailureThreshold: t.FailureThreshold,
-				Channels:         t.Notify,
+				Target:   t.Target,
+				Interval: time.Duration(t.IntervalS) * time.Second,
+				Timeout:  time.Duration(t.TimeoutMS) * time.Millisecond,
+				Channels: t.Notify,
+				Mon:      monitorConfig(t.Trigger, t.WindowSize, t.FailureThreshold, t.MinAvailability),
 			})
 		}
-		active["ping_monitor"] = roles.NewPingMonitor(targets, dispatcher, logger)
+		active["ping_monitor"] = roles.NewPingMonitor(targets, dispatcher, registry, logger)
 	}
 
 	if cfg.Roles.InternetCheck.Enabled {
@@ -162,10 +180,11 @@ func buildRoles(cfg *config.Config, dispatcher *notify.Dispatcher, logger *slog.
 			r.Sites,
 			time.Duration(r.IntervalS)*time.Second,
 			time.Duration(r.TimeoutMS)*time.Millisecond,
-			r.FailureThreshold,
+			monitorConfig(r.Trigger, r.WindowSize, r.FailureThreshold, r.MinAvailability),
 			r.Notify,
 			dispatcher,
 			nil,
+			registry,
 			logger,
 		)
 	}
@@ -176,10 +195,11 @@ func buildRoles(cfg *config.Config, dispatcher *notify.Dispatcher, logger *slog.
 			r.Binary,
 			time.Duration(r.IntervalS)*time.Second,
 			r.ThresholdMbps,
-			r.FailureThreshold,
+			monitorConfig(r.Trigger, r.WindowSize, r.FailureThreshold, r.MinAvailability),
 			r.Notify,
 			dispatcher,
 			nil,
+			registry,
 			logger,
 		)
 	}
