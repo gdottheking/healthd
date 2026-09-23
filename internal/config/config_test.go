@@ -164,6 +164,100 @@ func TestPingMonitorMultiTargetValid(t *testing.T) {
 	}
 }
 
+func TestPingMonitorProfilesResolve(t *testing.T) {
+	body := `{
+      "channels": { "log": { "type": "console" }, "hook": { "type": "webhook", "url": "https://x/h", "timeout_ms": 1000 } },
+      "roles": { "ping_monitor": {
+        "enabled": true,
+        "default_profile": "standard",
+        "profiles": {
+          "standard": { "interval_s": 30, "timeout_ms": 2000, "failure_threshold": 3, "notify": ["log"] },
+          "fast":     { "interval_s": 15, "timeout_ms": 1000, "failure_threshold": 2, "notify": ["hook"] }
+        },
+        "targets": [
+          { "target": "a:1" },
+          { "target": "b:1", "profile": "fast" },
+          { "target": "c:1", "failure_threshold": 5 },
+          { "target": "d:1", "profile": "fast", "notify": ["log"] }
+        ]
+      } }
+    }`
+	cfg, err := Load(writeConfig(t, body))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	tg := cfg.Roles.PingMonitor.Targets
+
+	// a: inherits default_profile "standard" wholesale.
+	if tg[0].IntervalS != 30 || tg[0].TimeoutMS != 2000 || tg[0].FailureThreshold != 3 || len(tg[0].Notify) != 1 || tg[0].Notify[0] != "log" {
+		t.Fatalf("a not resolved from default profile: %+v", tg[0])
+	}
+	// b: explicit profile "fast" overrides the default.
+	if tg[1].IntervalS != 15 || tg[1].TimeoutMS != 1000 || tg[1].FailureThreshold != 2 || tg[1].Notify[0] != "hook" {
+		t.Fatalf("b not resolved from fast profile: %+v", tg[1])
+	}
+	// c: default profile, but inline failure_threshold wins.
+	if tg[2].IntervalS != 30 || tg[2].FailureThreshold != 5 {
+		t.Fatalf("c inline override not applied: %+v", tg[2])
+	}
+	// d: fast profile, but inline notify wins over the profile's notify.
+	if tg[3].IntervalS != 15 || len(tg[3].Notify) != 1 || tg[3].Notify[0] != "log" {
+		t.Fatalf("d inline notify override not applied: %+v", tg[3])
+	}
+}
+
+func TestPingMonitorUndefinedProfile(t *testing.T) {
+	body := `{
+      "channels": { "log": { "type": "console" } },
+      "roles": { "ping_monitor": {
+        "enabled": true,
+        "profiles": { "standard": { "interval_s": 30, "timeout_ms": 2000, "notify": ["log"] } },
+        "targets": [ { "target": "a:1", "profile": "ghost" } ]
+      } }
+    }`
+	_, err := Load(writeConfig(t, body))
+	if err == nil || !strings.Contains(err.Error(), "profile") || !strings.Contains(err.Error(), "ghost") {
+		t.Fatalf("expected undefined-profile error naming the profile, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "a:1") {
+		t.Fatalf("error should identify the offending target: %v", err)
+	}
+}
+
+func TestPingMonitorUndefinedDefaultProfile(t *testing.T) {
+	body := `{
+      "channels": { "log": { "type": "console" } },
+      "roles": { "ping_monitor": {
+        "enabled": true,
+        "default_profile": "missing",
+        "profiles": { "standard": { "interval_s": 30, "timeout_ms": 2000, "notify": ["log"] } },
+        "targets": [ { "target": "a:1" } ]
+      } }
+    }`
+	_, err := Load(writeConfig(t, body))
+	if err == nil || !strings.Contains(err.Error(), "default_profile") || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("expected undefined default_profile error, got %v", err)
+	}
+}
+
+func TestPingMonitorProfileMissingRequiredFieldStillCaught(t *testing.T) {
+	// A profile that omits timeout_ms leaves the target with timeout_ms unset;
+	// validation must still flag it after resolution.
+	body := `{
+      "channels": { "log": { "type": "console" } },
+      "roles": { "ping_monitor": {
+        "enabled": true,
+        "default_profile": "p",
+        "profiles": { "p": { "interval_s": 30, "notify": ["log"] } },
+        "targets": [ { "target": "a:1" } ]
+      } }
+    }`
+	_, err := Load(writeConfig(t, body))
+	if err == nil || !strings.Contains(err.Error(), "timeout_ms") {
+		t.Fatalf("expected timeout_ms error after profile resolution, got %v", err)
+	}
+}
+
 func TestPingMonitorEmptyTargets(t *testing.T) {
 	body := `{
       "channels": {},

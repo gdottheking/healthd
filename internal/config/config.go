@@ -73,23 +73,47 @@ type PongServer struct {
 	ReadTimeoutMS int    `json:"read_timeout_ms"`
 }
 
-// PingTarget is a single independent ping monitor within ping_monitor.
-type PingTarget struct {
-	Target           string   `json:"target"`
-	IntervalS        int      `json:"interval_s"`
-	TimeoutMS        int      `json:"timeout_ms"`
-	FailureThreshold int      `json:"failure_threshold"`
+// PingProfile is a reusable bundle of the settings shared across ping targets.
+// A target references one by name (or inherits the role's default_profile) and
+// may override any individual field inline. All fields are optional here; a
+// referenced profile need only supply what its targets don't set themselves.
+type PingProfile struct {
+	IntervalS        int      `json:"interval_s,omitempty"`
+	TimeoutMS        int      `json:"timeout_ms,omitempty"`
+	FailureThreshold int      `json:"failure_threshold,omitempty"`
 	Trigger          string   `json:"trigger,omitempty"`
 	WindowSize       int      `json:"window_size,omitempty"`
 	MinAvailability  float64  `json:"min_availability,omitempty"`
-	Notify           []string `json:"notify"`
+	Notify           []string `json:"notify,omitempty"`
+}
+
+// PingTarget is a single independent ping monitor within ping_monitor. Only
+// Target is required per entry; the timing/notify fields may come from a
+// referenced Profile (or the role's default_profile), with any inline field
+// here overriding the profile.
+type PingTarget struct {
+	Target           string   `json:"target"`
+	Profile          string   `json:"profile,omitempty"`
+	IntervalS        int      `json:"interval_s,omitempty"`
+	TimeoutMS        int      `json:"timeout_ms,omitempty"`
+	FailureThreshold int      `json:"failure_threshold,omitempty"`
+	Trigger          string   `json:"trigger,omitempty"`
+	WindowSize       int      `json:"window_size,omitempty"`
+	MinAvailability  float64  `json:"min_availability,omitempty"`
+	Notify           []string `json:"notify,omitempty"`
 }
 
 // PingMonitor is the ping_monitor role config. Each entry in Targets is an
-// independent monitor with its own interval, timeout, threshold, and channels.
+// independent monitor with its own interval, timeout, threshold, and channels,
+// which it may inherit from a named entry in Profiles.
 type PingMonitor struct {
-	Enabled bool         `json:"enabled"`
-	Targets []PingTarget `json:"targets"`
+	Enabled bool `json:"enabled"`
+	// DefaultProfile names the profile applied to any target that does not set
+	// its own "profile". Optional; when set it must exist in Profiles.
+	DefaultProfile string `json:"default_profile,omitempty"`
+	// Profiles is a map of reusable setting bundles referenced by targets.
+	Profiles map[string]PingProfile `json:"profiles,omitempty"`
+	Targets  []PingTarget           `json:"targets"`
 }
 
 // InternetCheck is the internet_check role config.
@@ -150,11 +174,77 @@ func Load(path string) (*Config, error) {
 	if err := dec.Decode(&c); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	if err := c.resolvePingProfiles(); err != nil {
+		return nil, err
+	}
 	c.applyDefaults()
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
 	return &c, nil
+}
+
+// resolvePingProfiles folds each ping target's referenced profile (or the
+// role's default_profile) into the target, so downstream defaulting and
+// validation see fully-resolved targets. An inline field on the target wins
+// over the profile; the profile fills only the fields the target leaves unset.
+// It runs before applyDefaults so profile-supplied values are treated the same
+// as inline ones. Referencing an undefined profile is an error.
+func (c *Config) resolvePingProfiles() error {
+	pm := &c.Roles.PingMonitor
+	if !pm.Enabled {
+		return nil
+	}
+	if pm.DefaultProfile != "" {
+		if _, ok := pm.Profiles[pm.DefaultProfile]; !ok {
+			return fmt.Errorf("role ping_monitor: default_profile %q is not defined in profiles", pm.DefaultProfile)
+		}
+	}
+	for i := range pm.Targets {
+		t := &pm.Targets[i]
+		name := t.Profile
+		if name == "" {
+			name = pm.DefaultProfile
+		}
+		if name == "" {
+			continue // no profile: inline-only target (backward compatible)
+		}
+		p, ok := pm.Profiles[name]
+		if !ok {
+			return fmt.Errorf("role ping_monitor target %d (%q): profile %q is not defined in profiles", i, t.Target, name)
+		}
+		mergeProfile(t, p)
+	}
+	return nil
+}
+
+// mergeProfile copies each profile field into t where t leaves it unset. A
+// zero/empty inline value means "unset" and inherits from the profile; since
+// interval_s/timeout_ms/failure_threshold have no meaningful zero value
+// (validation requires them positive), this cleanly distinguishes override
+// from inherit.
+func mergeProfile(t *PingTarget, p PingProfile) {
+	if t.IntervalS == 0 {
+		t.IntervalS = p.IntervalS
+	}
+	if t.TimeoutMS == 0 {
+		t.TimeoutMS = p.TimeoutMS
+	}
+	if t.FailureThreshold == 0 {
+		t.FailureThreshold = p.FailureThreshold
+	}
+	if t.Trigger == "" {
+		t.Trigger = p.Trigger
+	}
+	if t.WindowSize == 0 {
+		t.WindowSize = p.WindowSize
+	}
+	if t.MinAvailability == 0 {
+		t.MinAvailability = p.MinAvailability
+	}
+	if len(t.Notify) == 0 {
+		t.Notify = p.Notify
+	}
 }
 
 // applyDefaults fills in sensible defaults for optional fields.

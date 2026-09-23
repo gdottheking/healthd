@@ -333,6 +333,42 @@ func TestPingMonitorHealthy(t *testing.T) {
 	}
 }
 
+// ping_monitor with reusable profiles + default_profile: targets that inherit
+// from a profile monitor a healthy local server without false alerts, proving
+// the binary resolves profiles end-to-end.
+func TestPingMonitorProfiles(t *testing.T) {
+	addr := "127.0.0.1:19012"
+	cfg := `{
+      "retry": { "max_attempts": 1, "base_delay_ms": 0 },
+      "channels": { "log": { "type": "console" } },
+      "roles": {
+        "pong_server": { "enabled": true, "listen": "` + addr + `", "read_timeout_ms": 2000 },
+        "ping_monitor": {
+          "enabled": true,
+          "default_profile": "std",
+          "profiles": {
+            "std": { "interval_s": 1, "timeout_ms": 1000, "failure_threshold": 1, "notify": ["log"] }
+          },
+          "targets": [
+            { "target": "` + addr + `" },
+            { "target": "` + addr + `", "profile": "std", "failure_threshold": 2 }
+          ]
+        }
+      }
+    }`
+	_, out := launch(t, writeConfig(t, cfg))
+	waitForListen(t, addr, 3*time.Second)
+	time.Sleep(3 * time.Second)
+
+	logs := out()
+	if strings.Contains(logs, "UNHEALTHY") {
+		t.Errorf("profile-resolved targets emitted a false UNHEALTHY alert:\n%s", logs)
+	}
+	if strings.Contains(logs, "ping_monitor check failed") {
+		t.Errorf("profile-resolved targets reported a failed check:\n%s", logs)
+	}
+}
+
 // Multi-target ping_monitor: a live target stays healthy (no alert) while an
 // independent dead target goes UNHEALTHY and fires exactly once at its own
 // threshold (no spam). Confirms per-target independence and clean shutdown.

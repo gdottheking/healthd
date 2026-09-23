@@ -43,9 +43,9 @@
     },
     "ping_monitor": {
       "enabled": true,
-      "targets": [
-        {
-          "target": "192.168.2.3:9000",
+      "default_profile": "standard",
+      "profiles": {
+        "standard": {
           "interval_s": 30,
           "timeout_ms": 2000,
           "failure_threshold": 3,
@@ -53,51 +53,22 @@
             "log"
           ]
         },
-        {
-          "target": "192.168.2.5:9000",
-          "interval_s": 30,
-          "timeout_ms": 2000,
-          "failure_threshold": 3,
-          "notify": [
-            "log"
-          ]
-        },
-        {
-          "target": "192.168.2.7:9000",
+        "fast": {
           "interval_s": 15,
           "timeout_ms": 1000,
           "failure_threshold": 2,
-          "notify": [
-            "log"
-          ]
-        },
-        {
-          "target": "192.168.2.9:9000",
-          "interval_s": 15,
-          "timeout_ms": 1000,
-          "failure_threshold": 2,
-          "notify": [
-            "log"
-          ]
-        },
-        {
-          "target": "192.168.2.13:9000",
-          "interval_s": 15,
-          "timeout_ms": 1000,
-          "failure_threshold": 2,
-          "notify": [
-            "log"
-          ]
-        },
-        {
-          "target": "192.168.2.15:9000",
-          "interval_s": 30,
-          "timeout_ms": 2000,
-          "failure_threshold": 3,
           "notify": [
             "log"
           ]
         }
+      },
+      "targets": [
+        { "target": "192.168.2.3:9000" },
+        { "target": "192.168.2.5:9000" },
+        { "target": "192.168.2.7:9000", "profile": "fast" },
+        { "target": "192.168.2.9:9000", "profile": "fast" },
+        { "target": "192.168.2.13:9000", "profile": "fast" },
+        { "target": "192.168.2.15:9000", "failure_threshold": 5 }
       ]
     },
     "internet_check": {

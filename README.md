@@ -213,38 +213,61 @@ Config is JSON. Path is set with `-config` (default `./config.json`). See
 
 ### `roles.ping_monitor`
 
-Only `enabled` lives at the role level; every other setting belongs to an
-entry in `targets`. Each entry is an independent monitor.
+Each entry in `targets` is an independent monitor. To avoid repeating the same
+settings on every target, define reusable **profiles** and reference them by
+name — the same way `notify` references named `channels`.
 
-| Key       | Type              | Notes |
-|-----------|-------------------|-------|
-| `enabled` | bool              | |
-| `targets` | object[]          | Required, non-empty. One independent monitor per entry. |
+| Key               | Type     | Notes |
+|-------------------|----------|-------|
+| `enabled`         | bool     | |
+| `profiles`        | object   | Optional. Map of profile name to a bundle of the shared target settings. |
+| `default_profile` | string   | Optional. Profile applied to any target that omits `profile`. Must exist in `profiles`. |
+| `targets`         | object[] | Required, non-empty. One independent monitor per entry. |
+
+A target resolves its settings in this order: **inline field on the target →
+its `profile` → the role's `default_profile`**. An inline field always
+overrides the profile, and a profile only fills fields the target leaves unset.
+A target with no `profile` and no `default_profile` must supply every required
+field inline (the original, still-supported form).
+
+Each `profiles[name]` entry may set any of: `interval_s`, `timeout_ms`,
+`failure_threshold`, `trigger`, `window_size`, `min_availability`, `notify`
+(same meanings as below).
 
 Each `targets[]` entry:
 
 | Key                 | Type     | Notes |
 |---------------------|----------|-------|
 | `target`            | string   | Required, `host:port`. |
-| `interval_s`        | int      | Required, > 0. |
-| `timeout_ms`        | int      | Required, > 0. |
-| `failure_threshold` | int      | >= 1 (defaults to 1 if omitted). Used by the `consecutive` trigger. |
+| `profile`           | string   | Optional. Name of a `profiles` entry to inherit from. Falls back to `default_profile`. Must exist in `profiles`. |
+| `interval_s`        | int      | > 0 after resolution (from target or profile). |
+| `timeout_ms`        | int      | > 0 after resolution. |
+| `failure_threshold` | int      | >= 1 (defaults to 1 if unset everywhere). Used by the `consecutive` trigger. |
 | `trigger`           | string   | `consecutive` (default) or `availability`. |
 | `window_size`      | int      | Rolling-window length. Defaults to 20 when omitted, so availability is always tracked and shown in the status snapshot. Must be > 0 for `availability`. |
 | `min_availability` | number   | Availability percentage (0–100) below which `availability` alerts. Required for `availability`. |
 | `notify`            | string[] | Channel names; each must exist in `channels`. |
 
-Example:
+Example — two profiles, a default, and a per-target override:
 
 ```json
 "ping_monitor": {
   "enabled": true,
+  "default_profile": "standard",
+  "profiles": {
+    "standard": { "interval_s": 30, "timeout_ms": 2000, "failure_threshold": 3, "notify": ["log"] },
+    "fast":     { "interval_s": 15, "timeout_ms": 1000, "failure_threshold": 2, "notify": ["log"] }
+  },
   "targets": [
-    { "target": "10.0.0.5:9000", "interval_s": 30, "timeout_ms": 2000, "failure_threshold": 3, "notify": ["hook", "log"] },
-    { "target": "10.0.0.6:9000", "interval_s": 15, "timeout_ms": 1000, "failure_threshold": 2, "notify": ["log"] }
+    { "target": "10.0.0.5:9000" },
+    { "target": "10.0.0.6:9000", "profile": "fast" },
+    { "target": "10.0.0.7:9000", "failure_threshold": 5 }
   ]
 }
 ```
+
+Here `10.0.0.5` uses `standard`, `10.0.0.6` uses `fast`, and `10.0.0.7` uses
+`standard` but bumps `failure_threshold` to 5.
 
 ### `roles.internet_check`
 
