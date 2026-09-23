@@ -1,0 +1,11 @@
+services:
+  healthd:
+    restart: always
+    build: 
+      context: .
+    ports:
+      - "9000:9000"
+    volumes:
+      - "./config.example.json:/config.json"
+    networks:
+      - host
