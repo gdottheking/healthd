@@ -1,4 +1,4 @@
-// Package roles implements the concurrent monitoring roles run by roled.
+// Package roles implements the concurrent monitoring roles run by healthd.
 package roles
 
 import (

@@ -1,6 +1,6 @@
 //go:build e2e
 
-// Package e2e drives the built roled binary end-to-end against the QA success
+// Package e2e drives the built healthd binary end-to-end against the QA success
 // criteria. Run with: go test -tags e2e ./e2e/ -v -count=1
 //
 // These tests build the binary into a temp dir, launch it with temp JSON
@@ -27,18 +27,18 @@ import (
 var binPath string
 
 func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "roled-e2e-*")
+	dir, err := os.MkdirTemp("", "healthd-e2e-*")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "mktemp:", err)
 		os.Exit(2)
 	}
-	binPath = filepath.Join(dir, "roled")
+	binPath = filepath.Join(dir, "healthd")
 
 	// Locate module root (parent of e2e dir).
 	wd, _ := os.Getwd()
 	moduleRoot := filepath.Dir(wd)
 
-	build := exec.Command("go", "build", "-o", binPath, "./cmd/roled")
+	build := exec.Command("go", "build", "-o", binPath, "./cmd/healthd")
 	build.Dir = moduleRoot
 	build.Stdout = os.Stderr
 	build.Stderr = os.Stderr
@@ -477,7 +477,7 @@ func testShutdown(t *testing.T, sig os.Signal, port string) {
 		if err != nil {
 			t.Errorf("expected exit 0, got error: %v\nlogs:\n%s", err, out())
 		}
-		if !strings.Contains(out(), "roled stopped") {
+		if !strings.Contains(out(), "healthd stopped") {
 			t.Errorf("missing graceful stop log line:\n%s", out())
 		}
 	case <-time.After(3 * time.Second):

@@ -17,11 +17,11 @@
       "type": "email",
       "smtp_host": "smtp.example.com",
       "port": 587,
-      "from": "roled@example.com",
+      "from": "healthd@example.com",
       "to": [
         "oncall@example.com"
       ],
-      "username": "roled@example.com",
+      "username": "healthd@example.com",
       "password_env": "SMTP_PASS"
     },
     "sms": {
@@ -54,7 +54,7 @@
           ]
         },
         "fast": {
-          "interval_s": 15,
+          "interval_s": 5,
           "timeout_ms": 1000,
           "failure_threshold": 2,
           "notify": [
@@ -63,12 +63,12 @@
         }
       },
       "targets": [
-        { "target": "192.168.2.3:9000" },
-        { "target": "192.168.2.5:9000" },
-        { "target": "192.168.2.7:9000", "profile": "fast" },
-        { "target": "192.168.2.9:9000", "profile": "fast" },
-        { "target": "192.168.2.13:9000", "profile": "fast" },
-        { "target": "192.168.2.15:9000", "failure_threshold": 5 }
+        { "target": "192.168.1.3:9000" },
+        { "target": "192.168.1.5:9000" },
+        { "target": "192.168.1.7:9000" },
+        { "target": "192.168.1.9:9000"},
+        { "target": "192.168.1.13:9000"},
+        { "target": "192.168.1.15:9000", "profile": "fast", "failure_threshold": 5 }
       ]
     },
     "internet_check": {

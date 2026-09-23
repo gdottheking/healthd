@@ -30,7 +30,7 @@ func TestEmailBuildsMessageAndSends(t *testing.T) {
 		t.Fatalf("from/to: %q %+v", gotFrom, gotTo)
 	}
 	msg := string(gotMsg)
-	if !strings.Contains(msg, "Subject: [roled] speed_check UNHEALTHY") {
+	if !strings.Contains(msg, "Subject: [healthd] speed_check UNHEALTHY") {
 		t.Fatalf("subject missing: %q", msg)
 	}
 	if strings.Contains(msg, "secret") {

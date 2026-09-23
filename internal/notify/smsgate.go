@@ -41,7 +41,7 @@ type smsMessage struct {
 // Notify posts a short SMS-friendly message to all recipients. A non-2xx
 // response is treated as an error.
 func (s *SMSGate) Notify(ctx context.Context, alert Alert) error {
-	text := fmt.Sprintf("[roled] %s %s: %s", alert.Role, alert.State, alert.Detail)
+	text := fmt.Sprintf("[healthd] %s %s: %s", alert.Role, alert.State, alert.Detail)
 	body, err := json.Marshal(smsMessage{Message: text, PhoneNumbers: s.recipients})
 	if err != nil {
 		return fmt.Errorf("smsgate marshal: %w", err)

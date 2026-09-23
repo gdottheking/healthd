@@ -11,7 +11,7 @@ COPY . .
 
 # Build a static binary so it runs in a minimal final image.
 ENV CGO_ENABLED=0 GOOS=linux
-RUN go build -trimpath -ldflags="-s -w" -o /out/roled ./cmd/roled
+RUN go build -trimpath -ldflags="-s -w" -o /out/healthd ./cmd/healthd
 
 # ---- Final stage ----------------------------------------------------------
 # Debian slim so we can install the official Ookla speedtest CLI from apt.
@@ -28,11 +28,11 @@ RUN apt-get update \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=build /out/roled /usr/local/bin/roled
-COPY config.example.json /etc/roled/config.json
+COPY --from=build /out/healthd /usr/local/bin/healthd
+COPY config.example.json /etc/healthd/config.json
 
 # Secrets are provided at runtime via environment variables referenced by each
 # channel's password_env (for example SMTP_PASS, SMSGATE_PASS). Never bake
 # secrets into the image.
-ENTRYPOINT ["/usr/local/bin/roled"]
-CMD ["-config", "/etc/roled/config.json"]
+ENTRYPOINT ["/usr/local/bin/healthd"]
+CMD ["-config", "/etc/healthd/config.json"]

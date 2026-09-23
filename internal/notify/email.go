@@ -40,7 +40,7 @@ func NewEmail(host string, port int, from string, to []string, username, passwor
 // send is run in a goroutine and abandoned if ctx is cancelled first.
 func (e *Email) Notify(ctx context.Context, alert Alert) error {
 	addr := fmt.Sprintf("%s:%d", e.host, e.port)
-	subject := fmt.Sprintf("[roled] %s %s", alert.Role, alert.State)
+	subject := fmt.Sprintf("[healthd] %s %s", alert.Role, alert.State)
 	msg := buildMessage(e.from, e.to, subject, alert)
 
 	var auth smtp.Auth

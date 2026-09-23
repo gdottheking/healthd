@@ -1,4 +1,4 @@
-// Package config defines the roled configuration schema and its loader and
+// Package config defines the healthd configuration schema and its loader and
 // validator. Config is read once at startup; restart to apply changes.
 package config
 

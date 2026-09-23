@@ -1,6 +1,6 @@
-# roled
+# healthd
 
-`roled` is a multi-role connection monitoring daemon written in Go. A single
+`healthd` is a multi-role connection monitoring daemon written in Go. A single
 process runs any subset of the configured roles concurrently, each on its own
 goroutine and ticker. Configuration is read once at startup; restart the
 process to apply changes. The daemon shuts down gracefully on `SIGINT` or
@@ -314,13 +314,13 @@ export SMSGATE_PASS='...'
 ## Build
 
 ```
-go build ./cmd/roled
+go build ./cmd/healthd
 ```
 
 ## Run
 
 ```
-./roled -config ./config.json
+./healthd -config ./config.json
 ```
 
 Send `SIGINT` (Ctrl-C) or `SIGTERM` to stop; all roles drain and the process
@@ -344,11 +344,11 @@ Ookla apt repository. The `speed_check` role invokes the CLI with
 `--accept-license --accept-gdpr`, so no interactive license prompt is required.
 
 ```
-docker build -t roled .
+docker build -t healthd .
 docker run --rm \
   -e SMTP_PASS \
   -e SMSGATE_PASS \
-  -v "$PWD/config.json:/etc/roled/config.json:ro" \
+  -v "$PWD/config.json:/etc/healthd/config.json:ro" \
   -p 9000:9000 \
-  roled
+  healthd
 ```

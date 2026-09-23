@@ -1,4 +1,4 @@
-// Command roled is a multi-role connection monitoring daemon. A single
+// Command healthd is a multi-role connection monitoring daemon. A single
 // process runs any subset of the configured roles concurrently. Config is
 // read once at startup; restart to apply changes.
 package main
@@ -34,7 +34,7 @@ func main() {
 	slog.SetDefault(logger)
 
 	if err := run(*configPath, logger); err != nil {
-		logger.Error("roled failed", slog.Any("error", err))
+		logger.Error("healthd failed", slog.Any("error", err))
 		os.Exit(1)
 	}
 }
@@ -99,11 +99,11 @@ func run(configPath string, logger *slog.Logger) error {
 		}(name, r)
 	}
 
-	logger.Info("roled started", slog.Int("roles", len(active)))
+	logger.Info("healthd started", slog.Int("roles", len(active)))
 	<-ctx.Done()
 	logger.Info("stopping roles")
 	wg.Wait()
-	logger.Info("roled stopped")
+	logger.Info("healthd stopped")
 
 	fatalMu.Lock()
 	defer fatalMu.Unlock()
