@@ -205,7 +205,7 @@ Config is JSON. Path is set with `-config` (default `./config.json`). See
 | `url`          | string   | webhook           | Required. |
 | `timeout_ms`   | int      | webhook, smsgate  | Per-request timeout. |
 | `smtp_host`    | string   | email             | Required. |
-| `port`         | int      | email             | Required, > 0. |
+| `port`         | int      | email             | Required, > 0. Port `465` uses implicit TLS (TLS from connect, e.g. Gmail SMTPS); any other port (e.g. `587`) connects in cleartext and upgrades via STARTTLS. |
 | `from`         | string   | email             | Required. |
 | `to`           | string[] | email             | Required, non-empty. |
 | `base_url`     | string   | smsgate           | Required, e.g. `http://127.0.0.1:8080/3rdparty/v1`. |
@@ -368,6 +368,10 @@ secret from that variable at startup. Example for the sample config:
 export SMTP_PASS='...'
 export SMSGATE_PASS='...'
 ```
+
+**Gmail:** use `smtp.gmail.com` with port `465` (implicit TLS) or `587`
+(STARTTLS), and set `SMTP_PASS` to an [App Password](https://myaccount.google.com/apppasswords)
+(requires 2-Step Verification) — Gmail rejects your normal account password.
 
 ## Build
 

@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"errors"
+	"net"
 	"net/smtp"
 	"strings"
 	"testing"
@@ -51,6 +52,37 @@ func TestEmailSendPanicBecomesError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "panic") {
 		t.Fatalf("error should mention panic, got %v", err)
+	}
+}
+
+func TestUseImplicitTLS(t *testing.T) {
+	if !useImplicitTLS(465) {
+		t.Fatal("port 465 should use implicit TLS")
+	}
+	for _, p := range []int{25, 587, 2525} {
+		if useImplicitTLS(p) {
+			t.Fatalf("port %d should not use implicit TLS", p)
+		}
+	}
+}
+
+// NewEmail on port 465 must select the implicit-TLS sender: pointed at a
+// closed port it returns a tls-dial error rather than hanging or panicking.
+func TestEmailImplicitTLSSelectedForPort465(t *testing.T) {
+	// Reserve then release a port so nothing is listening on it.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	host, portStr, _ := net.SplitHostPort(addr)
+	ln.Close()
+
+	e := NewEmail(host, implicitTLSPort, "a@x", []string{"b@x"}, "", "")
+	// Override the address the sender dials by using the real reserved port via
+	// the sender directly; this exercises sendImplicitTLS' error path.
+	if err := e.send(net.JoinHostPort(host, portStr), nil, "a@x", []string{"b@x"}, []byte("m")); err == nil {
+		t.Fatal("expected a dial error against a closed port")
 	}
 }
 

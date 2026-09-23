@@ -2,11 +2,17 @@ package notify
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"net"
 	"net/smtp"
 	"strings"
 	"time"
 )
+
+// implicitTLSPort is the SMTPS submission port, which expects a TLS handshake
+// immediately on connect (no STARTTLS). Providers like Gmail serve it here.
+const implicitTLSPort = 465
 
 // smtpSendFunc matches net/smtp.SendMail so tests can inject a fake sender.
 type smtpSendFunc func(addr string, a smtp.Auth, from string, to []string, msg []byte) error
@@ -24,7 +30,17 @@ type Email struct {
 
 // NewEmail returns an Email channel. password is the resolved secret (read
 // from the environment by the caller); it is never stored in config.
+//
+// The send strategy is chosen by port: port 465 uses an implicit-TLS
+// connection (tls.Dial from the start), while every other port uses
+// smtp.SendMail, which connects in cleartext and upgrades via STARTTLS (e.g.
+// port 587). Pointing STARTTLS at an implicit-TLS port yields an EOF as the
+// server drops the plaintext SMTP greeting.
 func NewEmail(host string, port int, from string, to []string, username, password string) *Email {
+	send := smtp.SendMail
+	if useImplicitTLS(port) {
+		send = sendImplicitTLS
+	}
 	return &Email{
 		host:     host,
 		port:     port,
@@ -32,8 +48,57 @@ func NewEmail(host string, port int, from string, to []string, username, passwor
 		to:       to,
 		username: username,
 		password: password,
-		send:     smtp.SendMail,
+		send:     send,
 	}
+}
+
+// useImplicitTLS reports whether the port speaks implicit TLS (SMTPS).
+func useImplicitTLS(port int) bool { return port == implicitTLSPort }
+
+// sendImplicitTLS delivers a message over a connection that is TLS from the
+// start. It matches smtpSendFunc so it is interchangeable with smtp.SendMail.
+// The server certificate is verified against the host (derived from addr); it
+// does not skip verification.
+func sendImplicitTLS(addr string, auth smtp.Auth, from string, to []string, msg []byte) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("split host: %w", err)
+	}
+	conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: host})
+	if err != nil {
+		return fmt.Errorf("tls dial: %w", err)
+	}
+	client, err := smtp.NewClient(conn, host)
+	if err != nil {
+		conn.Close()
+		return fmt.Errorf("smtp client: %w", err)
+	}
+	defer client.Close()
+
+	if auth != nil {
+		if err := client.Auth(auth); err != nil {
+			return fmt.Errorf("auth: %w", err)
+		}
+	}
+	if err := client.Mail(from); err != nil {
+		return fmt.Errorf("mail from: %w", err)
+	}
+	for _, rcpt := range to {
+		if err := client.Rcpt(rcpt); err != nil {
+			return fmt.Errorf("rcpt %s: %w", rcpt, err)
+		}
+	}
+	w, err := client.Data()
+	if err != nil {
+		return fmt.Errorf("data: %w", err)
+	}
+	if _, err := w.Write(msg); err != nil {
+		return fmt.Errorf("write body: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("close body: %w", err)
+	}
+	return client.Quit()
 }
 
 // Notify builds and sends the RFC822 message. ctx is honored best-effort: the
