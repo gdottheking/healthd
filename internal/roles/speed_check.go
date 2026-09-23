@@ -117,6 +117,14 @@ func (s *SpeedCheck) runCheck(ctx context.Context) {
 
 	ev := s.sm.Observe(success)
 	s.handle.Update(s.sm)
+	now := time.Now()
+	s.handle.RecordCheck(now, success)
+	// Record the measured throughput whenever a real measurement was taken
+	// (err == nil), even if it was below threshold; an exec failure has no
+	// meaningful Mbps to record.
+	if err == nil {
+		s.handle.RecordSpeed(now, mbps)
+	}
 	if ev != monitor.None {
 		s.handle.LogSnapshot(s.logger)
 	}

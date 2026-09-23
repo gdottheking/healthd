@@ -30,6 +30,10 @@ const (
 // the status snapshot regardless of trigger mode.
 const defaultWindowSize = 20
 
+// defaultSummaryIntervalS is the aggregated-summary cadence (15 minutes) used
+// when summary_interval_s is omitted.
+const defaultSummaryIntervalS = 900
+
 // Retry configures the dispatcher's retry-with-backoff behavior.
 type Retry struct {
 	MaxAttempts int `json:"max_attempts"`
@@ -124,9 +128,13 @@ type Roles struct {
 
 // Config is the full daemon configuration.
 type Config struct {
-	Retry    Retry              `json:"retry"`
-	Channels map[string]Channel `json:"channels"`
-	Roles    Roles              `json:"roles"`
+	Retry Retry `json:"retry"`
+	// SummaryIntervalS is how often, in seconds, an instance running any
+	// monitoring role logs an aggregated summary. Optional; defaults to 900
+	// (15 minutes).
+	SummaryIntervalS int                `json:"summary_interval_s,omitempty"`
+	Channels         map[string]Channel `json:"channels"`
+	Roles            Roles              `json:"roles"`
 }
 
 // Load reads and parses the config file at path, then validates it. A
@@ -156,6 +164,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Retry.BaseDelayMS == 0 {
 		c.Retry.BaseDelayMS = 500
+	}
+	if c.SummaryIntervalS == 0 {
+		c.SummaryIntervalS = defaultSummaryIntervalS
 	}
 	if c.Roles.SpeedCheck.Binary == "" {
 		c.Roles.SpeedCheck.Binary = "speedtest"
@@ -210,6 +221,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Retry.BaseDelayMS < 0 {
 		return fmt.Errorf("retry.base_delay_ms must be >= 0")
+	}
+	if c.SummaryIntervalS <= 0 {
+		return fmt.Errorf("summary_interval_s must be > 0")
 	}
 
 	if err := c.validateChannels(); err != nil {

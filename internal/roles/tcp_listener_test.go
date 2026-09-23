@@ -10,10 +10,11 @@ import (
 	"connection_monitor/internal/protocol"
 )
 
-// startPongServer starts a server on an ephemeral port and returns its address.
+// startPongServer starts a ping-only listener on an ephemeral port and returns
+// its address.
 func startPongServer(t *testing.T) string {
 	t.Helper()
-	s := NewPongServer(":0", 2*time.Second, testLogger())
+	s := NewTCPListener(":0", 2*time.Second, NewMessageDispatcher(PingHandler{}), testLogger())
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
@@ -129,7 +130,7 @@ func TestPongServerMalformedJSONSurvives(t *testing.T) {
 
 func TestPongServerBoundsOversizedRequest(t *testing.T) {
 	// Server with a small request cap so we can exceed it cheaply.
-	s := NewPongServer(":0", 2*time.Second, testLogger())
+	s := NewTCPListener(":0", 2*time.Second, NewMessageDispatcher(PingHandler{}), testLogger())
 	s.maxRequest = 256
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)

@@ -107,6 +107,7 @@ func (m *pingTargetMonitor) runCheck(ctx context.Context) {
 	}
 	ev := m.sm.Observe(success)
 	m.handle.Update(m.sm)
+	m.handle.RecordCheck(time.Now(), success)
 	if ev != monitor.None {
 		m.handle.LogSnapshot(m.logger)
 	}

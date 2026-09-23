@@ -3,6 +3,7 @@
     "max_attempts": 3,
     "base_delay_ms": 500
   },
+  "summary_interval_s": 900,
   "channels": {
     "log": {
       "type": "console"

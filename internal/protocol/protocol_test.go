@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -80,5 +81,50 @@ func TestNewError(t *testing.T) {
 	resp := NewError("id1", "boom")
 	if resp.Type != TypeError || resp.ID != "id1" || resp.Payload.Message != "boom" {
 		t.Fatalf("NewError unexpected: %+v", resp)
+	}
+}
+
+func TestPongResponseOmitsSummaryField(t *testing.T) {
+	line, err := EncodeResponse(NewPong(Request{Version: Version, ID: "a", Type: TypePing}))
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if strings.Contains(string(line), "summary") {
+		t.Fatalf("pong response should omit the summary field, got %s", line)
+	}
+}
+
+func TestSummaryRoundTrip(t *testing.T) {
+	resp := NewSummary("s1", Summary{
+		GeneratedAtMS: 1_700_000_000_000,
+		Units: []UnitSummary{{
+			Name:                "speed_check",
+			State:               "HEALTHY",
+			Availability:        95.5,
+			HistoryAvailability: 90,
+			ConsecutiveFailures: 0,
+			LastSuccessMS:       1_700_000_000_001,
+			Speed:               &SpeedSummary{Count: 2, MinMbps: 100, AvgMbps: 200, MaxMbps: 300, LatestMbps: 300},
+			Speeds:              []SpeedSample{{TimeMS: 1, Mbps: 100}, {TimeMS: 2, Mbps: 300}},
+			Checks:              []CheckSample{{TimeMS: 1, Success: true}},
+		}},
+	})
+	line, err := EncodeResponse(resp)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	got, err := DecodeResponse(line)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Type != TypeSummary || got.ID != "s1" || got.Summary == nil {
+		t.Fatalf("unexpected: %+v", got)
+	}
+	u := got.Summary.Units[0]
+	if u.Name != "speed_check" || u.Speed == nil || u.Speed.LatestMbps != 300 {
+		t.Fatalf("unit lost in round-trip: %+v", u)
+	}
+	if len(u.Speeds) != 2 || len(u.Checks) != 1 {
+		t.Fatalf("samples lost: %+v", u)
 	}
 }

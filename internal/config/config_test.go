@@ -68,6 +68,33 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	if cfg.Roles.SpeedCheck.FailureThreshold != 1 {
 		t.Fatalf("failure_threshold default not applied: %d", cfg.Roles.SpeedCheck.FailureThreshold)
 	}
+	if cfg.SummaryIntervalS != 900 {
+		t.Fatalf("summary_interval_s default: got %d want 900", cfg.SummaryIntervalS)
+	}
+}
+
+func TestSummaryIntervalOverrideAndRejection(t *testing.T) {
+	body := `{
+      "summary_interval_s": 60,
+      "channels": {},
+      "roles": { "speed_check": { "enabled": true, "interval_s": 10, "threshold_mbps": 50 } }
+    }`
+	cfg, err := Load(writeConfig(t, body))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.SummaryIntervalS != 60 {
+		t.Fatalf("summary_interval_s override: got %d want 60", cfg.SummaryIntervalS)
+	}
+
+	bad := `{
+      "summary_interval_s": -1,
+      "channels": {},
+      "roles": {}
+    }`
+	if _, err := Load(writeConfig(t, bad)); err == nil || !strings.Contains(err.Error(), "summary_interval_s must be > 0") {
+		t.Fatalf("expected summary_interval_s rejection, got %v", err)
+	}
 }
 
 func TestChannelTimeoutDefaulted(t *testing.T) {

@@ -10,9 +10,17 @@ process to apply changes. The daemon shuts down gracefully on `SIGINT` or
 
 All roles are optional and enabled per the config file.
 
-- **pong_server** — TCP server. Reads a newline-framed JSON ping request and
-  replies with a pong (echoing the request `id` and `payload.timestamp`).
-  Malformed JSON or an unsupported protocol version yields an `error` response
+- **pong_server** — TCP server. Reads newline-framed JSON requests and routes
+  each one, by its `type`, through a message dispatcher to a handler. The
+  server is layered: a `tcp_listener` owns connection lifecycle, framing,
+  timeouts, and the request-size bound; a `message_dispatcher` decodes each
+  line, centrally handles malformed JSON and version mismatches, and routes to
+  the registered handler; each `message_handler` serves one request type. The
+  built-in `ping` handler replies with a pong (echoing the request `id` and
+  `payload.timestamp`). When the same process also runs a monitoring role (see
+  below), a `get-summary` handler is registered too (see
+  [Summary requests](#summary-requests)). Malformed JSON, an unsupported
+  protocol version, or an unknown request type yields an `error` response
   instead of crashing the server. One goroutine per connection; multiple
   sequential requests are supported until the client closes or the per-read
   timeout (`read_timeout_ms`) elapses.
@@ -71,6 +79,71 @@ percentage, consecutive-failure count, and last-success time. `speed_check`
 additionally logs a `speed_check result` line after every execution (measured
 Mbps, threshold, pass/fail).
 
+## Monitoring summary
+
+An instance running any monitoring role (`ping_monitor`, `internet_check`, or
+`speed_check`) is a *monitoring instance*. In addition to the state-change
+alerts and snapshots above, a monitoring instance:
+
+- **Logs an aggregated summary on a fixed cadence.** Every
+  `summary_interval_s` (default 900 s = 15 minutes) it emits one `monitoring
+  summary` line covering every unit: current state, consecutive failures,
+  rolling-window availability, availability across retained history, number of
+  checks recorded, last-success time, and — for `speed_check` — the count and
+  min/avg/max/latest of recent download-speed measurements. A pong-only
+  instance (no monitoring role) does not log this and does not answer summary
+  requests.
+- **Retains a bounded per-unit history.** Every unit keeps the most recent
+  check outcomes (up to 100), and `speed_check` additionally keeps its recent
+  measured Mbps values (up to 100). The oldest sample is evicted once the
+  buffer is full, so memory stays bounded. This history backs both the periodic
+  log line and the `get-summary` response.
+
+### Summary requests
+
+A monitoring instance's `pong_server` accepts a `get-summary` request on the
+same port and protocol as `ping`:
+
+```json
+{ "version": "0.1", "id": "s1", "type": "get-summary", "payload": {} }
+```
+
+The response echoes the `id` with `type` `summary` and a `summary` object. Each
+unit reports its current status and its retained availability/speed history
+(timestamps are epoch milliseconds; `speed` and the sample arrays are omitted
+when empty):
+
+```json
+{
+  "version": "0.1",
+  "id": "s1",
+  "type": "summary",
+  "payload": {},
+  "summary": {
+    "generated_at_ms": 1700000000000,
+    "units": [
+      {
+        "name": "speed_check",
+        "state": "HEALTHY",
+        "availability_pct": 100,
+        "history_availability_pct": 95.0,
+        "consecutive_failures": 0,
+        "last_success_ms": 1700000000001,
+        "speed": { "count": 20, "min_mbps": 410.2, "avg_mbps": 512.8, "max_mbps": 623.1, "latest_mbps": 540.0 },
+        "checks": [ { "time_ms": 1700000000000, "success": true } ],
+        "speeds": [ { "time_ms": 1700000000000, "mbps": 540.0 } ]
+      }
+    ]
+  }
+}
+```
+
+A `get-summary` sent to a pong-only (non-monitoring) instance yields an `error`
+response with message `unsupported request type`. The response never contains
+secrets. Note that any client that can reach the port can read this
+availability/infrastructure data; restrict network access to the listener
+accordingly.
+
 ## Notifications
 
 Each role lists channel names in its `notify` array. When an alert fires, the
@@ -100,11 +173,12 @@ Config is JSON. Path is set with `-config` (default `./config.json`). See
 
 ### Top level
 
-| Key        | Type   | Notes |
-|------------|--------|-------|
-| `retry`    | object | Dispatcher retry policy. |
-| `channels` | object | Map of channel name to channel definition. |
-| `roles`    | object | Role definitions. |
+| Key                  | Type   | Notes |
+|----------------------|--------|-------|
+| `retry`              | object | Dispatcher retry policy. |
+| `summary_interval_s` | int    | Aggregated-summary cadence for monitoring instances. Optional; defaults to 900 (15 min). Must be > 0. |
+| `channels`           | object | Map of channel name to channel definition. |
+| `roles`              | object | Role definitions. |
 
 ### `retry`
 

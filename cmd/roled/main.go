@@ -151,11 +151,24 @@ func monitorConfig(trigger string, windowSize, failureThreshold int, minAvailabi
 func buildRoles(cfg *config.Config, dispatcher *notify.Dispatcher, registry *monitor.Registry, logger *slog.Logger) map[string]role {
 	active := make(map[string]role)
 
+	// An instance is "monitoring" if it runs any role that observes hosts and
+	// feeds the registry. Such an instance both logs a periodic aggregated
+	// summary and answers get-summary requests.
+	monitoring := cfg.Roles.PingMonitor.Enabled || cfg.Roles.InternetCheck.Enabled || cfg.Roles.SpeedCheck.Enabled
+
 	if cfg.Roles.PongServer.Enabled {
 		r := cfg.Roles.PongServer
-		active["pong_server"] = roles.NewPongServer(
+		handlers := []roles.MessageHandler{roles.PingHandler{}}
+		if monitoring {
+			// Only a monitoring instance can answer get-summary; a pong-only
+			// instance rejects it as an unsupported request type.
+			handlers = append(handlers, roles.NewSummaryHandler(registry))
+		}
+		msgDispatcher := roles.NewMessageDispatcher(handlers...)
+		active["pong_server"] = roles.NewTCPListener(
 			r.Listen,
 			time.Duration(r.ReadTimeoutMS)*time.Millisecond,
+			msgDispatcher,
 			logger,
 		)
 	}
@@ -200,6 +213,15 @@ func buildRoles(cfg *config.Config, dispatcher *notify.Dispatcher, registry *mon
 			dispatcher,
 			nil,
 			registry,
+			logger,
+		)
+	}
+
+	// A monitoring instance logs an aggregated summary on a fixed cadence.
+	if monitoring {
+		active["summary_reporter"] = roles.NewSummaryReporter(
+			registry,
+			time.Duration(cfg.SummaryIntervalS)*time.Second,
 			logger,
 		)
 	}

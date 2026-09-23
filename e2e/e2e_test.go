@@ -208,6 +208,99 @@ func TestPongRoundTripAndRobustness(t *testing.T) {
 	}
 }
 
+// summaryResp decodes a get-summary response, including the summary payload
+// the base resp struct omits.
+type summaryResp struct {
+	Version string `json:"version"`
+	ID      string `json:"id"`
+	Type    string `json:"type"`
+	Summary *struct {
+		GeneratedAtMS int64 `json:"generated_at_ms"`
+		Units         []struct {
+			Name                string  `json:"name"`
+			State               string  `json:"state"`
+			HistoryAvailability float64 `json:"history_availability_pct"`
+			Checks              []struct {
+				TimeMS  int64 `json:"time_ms"`
+				Success bool  `json:"success"`
+			} `json:"checks"`
+		} `json:"units"`
+	} `json:"summary"`
+}
+
+// A monitoring instance (pong_server + ping_monitor) answers get-summary with a
+// summary of every unit it monitors, including recorded availability history.
+func TestGetSummaryOnMonitoringInstance(t *testing.T) {
+	addr := "127.0.0.1:19010"
+	cfg := `{
+      "retry": { "max_attempts": 1, "base_delay_ms": 0 },
+      "channels": { "log": { "type": "console" } },
+      "roles": {
+        "pong_server": { "enabled": true, "listen": "` + addr + `", "read_timeout_ms": 2000 },
+        "ping_monitor": {
+          "enabled": true,
+          "targets": [
+            { "target": "` + addr + `", "interval_s": 1, "timeout_ms": 1000, "failure_threshold": 1, "notify": ["log"] }
+          ]
+        }
+      }
+    }`
+	launch(t, writeConfig(t, cfg))
+	waitForListen(t, addr, 3*time.Second)
+
+	// Let a few ping cycles record history.
+	time.Sleep(2500 * time.Millisecond)
+
+	line := sendLine(t, addr, `{"version":"0.1","id":"sum-1","type":"get-summary","payload":{}}`)
+	var r summaryResp
+	if err := json.Unmarshal([]byte(line), &r); err != nil {
+		t.Fatalf("decode summary %q: %v", line, err)
+	}
+	if r.Type != "summary" || r.ID != "sum-1" {
+		t.Fatalf("expected summary response echoing id, got type=%q id=%q", r.Type, r.ID)
+	}
+	if r.Summary == nil || len(r.Summary.Units) != 1 {
+		t.Fatalf("expected exactly one monitored unit, got %+v", r.Summary)
+	}
+	u := r.Summary.Units[0]
+	if !strings.HasPrefix(u.Name, "ping_monitor:") {
+		t.Errorf("unit name: got %q want ping_monitor:* prefix", u.Name)
+	}
+	if len(u.Checks) == 0 {
+		t.Errorf("expected recorded check history, got none")
+	}
+	if u.State != "HEALTHY" {
+		t.Errorf("healthy local target should report HEALTHY, got %q", u.State)
+	}
+}
+
+// A pong-only instance is not monitoring, so it rejects get-summary as an
+// unsupported request type while still answering pings.
+func TestGetSummaryRejectedWhenNotMonitoring(t *testing.T) {
+	addr := "127.0.0.1:19011"
+	cfg := `{
+      "channels": { "log": { "type": "console" } },
+      "roles": {
+        "pong_server": { "enabled": true, "listen": "` + addr + `", "read_timeout_ms": 2000 }
+      }
+    }`
+	launch(t, writeConfig(t, cfg))
+	waitForListen(t, addr, 3*time.Second)
+
+	r := decode(t, sendLine(t, addr, `{"version":"0.1","id":"sum-x","type":"get-summary","payload":{}}`))
+	if r.Type != "error" {
+		t.Fatalf("expected error for get-summary on non-monitoring instance, got %q", r.Type)
+	}
+	if !strings.Contains(r.Payload.Message, "unsupported request type") {
+		t.Errorf("message: got %q want unsupported request type", r.Payload.Message)
+	}
+	// A normal ping still works.
+	p := decode(t, sendLine(t, addr, `{"version":"0.1","id":"p","type":"ping","payload":{"timestamp":1}}`))
+	if p.Type != "pong" {
+		t.Errorf("pong-only instance should still answer pings, got %q", p.Type)
+	}
+}
+
 // Scenario 5: ping_monitor pointed at the local pong_server reports healthy
 // (no false UNHEALTHY alerts) via the console channel.
 func TestPingMonitorHealthy(t *testing.T) {
@@ -269,8 +362,20 @@ func TestPingMonitorMultiTargetIndependence(t *testing.T) {
 
 	logs := out()
 
-	// Exactly one UNHEALTHY alert overall, and it must be for the dead target.
-	nUnhealthy := strings.Count(logs, `"state":"UNHEALTHY"`)
+	// Exactly one UNHEALTHY *alert*, and it must be for the dead target. Only
+	// count alert lines: a status-snapshot line also embeds a unit's state
+	// string (and names every unit), so matching bare "state":"UNHEALTHY"
+	// would double-count and misattribute.
+	nUnhealthy := 0
+	for _, line := range strings.Split(logs, "\n") {
+		if !strings.Contains(line, `"msg":"alert"`) || !strings.Contains(line, `"state":"UNHEALTHY"`) {
+			continue
+		}
+		nUnhealthy++
+		if !strings.Contains(line, dead) || strings.Contains(line, live) {
+			t.Errorf("UNHEALTHY alert not attributed to dead target:\n%s", line)
+		}
+	}
 	if nUnhealthy != 1 {
 		t.Errorf("expected exactly 1 UNHEALTHY alert, got %d\nlogs:\n%s", nUnhealthy, logs)
 	}
@@ -280,14 +385,6 @@ func TestPingMonitorMultiTargetIndependence(t *testing.T) {
 	// The live target must never appear in a failed check or UNHEALTHY alert.
 	if strings.Contains(logs, "ping to "+live+" failed") {
 		t.Errorf("live target %s reported a failed check\nlogs:\n%s", live, logs)
-	}
-	// Sanity: the single UNHEALTHY line must reference the dead target, not live.
-	for _, line := range strings.Split(logs, "\n") {
-		if strings.Contains(line, `"state":"UNHEALTHY"`) {
-			if !strings.Contains(line, dead) || strings.Contains(line, live) {
-				t.Errorf("UNHEALTHY alert not attributed to dead target:\n%s", line)
-			}
-		}
 	}
 
 	// Independent monitors, still a clean shutdown.

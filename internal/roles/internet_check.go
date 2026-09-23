@@ -83,6 +83,7 @@ func (c *InternetCheck) runCheck(ctx context.Context) {
 	}
 	ev := c.sm.Observe(success)
 	c.handle.Update(c.sm)
+	c.handle.RecordCheck(time.Now(), success)
 	if ev != monitor.None {
 		c.handle.LogSnapshot(c.logger)
 	}

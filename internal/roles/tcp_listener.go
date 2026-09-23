@@ -16,12 +16,16 @@ import (
 // unauthenticated client cannot exhaust memory by streaming newline-free bytes.
 const defaultMaxRequestBytes = 64 * 1024
 
-// PongServer is a TCP server that answers newline-framed ping requests with
-// pong responses.
-type PongServer struct {
+// TCPListener is a TCP server that reads newline-framed JSON requests and
+// writes newline-framed JSON responses. It owns connection lifecycle, framing,
+// timeouts, and the request-size bound; the actual request-to-response logic is
+// delegated to a MessageDispatcher, so new message types are added by
+// registering handlers rather than changing the listener.
+type TCPListener struct {
 	listen      string
 	readTimeout time.Duration
 	maxRequest  int
+	dispatcher  *MessageDispatcher
 	logger      *slog.Logger
 
 	// ready is closed once the listener is bound; addr is then readable.
@@ -29,15 +33,17 @@ type PongServer struct {
 	addr  net.Addr
 }
 
-// NewPongServer builds a PongServer bound (at Run time) to listen.
-func NewPongServer(listen string, readTimeout time.Duration, logger *slog.Logger) *PongServer {
+// NewTCPListener builds a TCPListener that serves listen and routes each
+// request through dispatcher. It binds at Run time.
+func NewTCPListener(listen string, readTimeout time.Duration, dispatcher *MessageDispatcher, logger *slog.Logger) *TCPListener {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &PongServer{
+	return &TCPListener{
 		listen:      listen,
 		readTimeout: readTimeout,
 		maxRequest:  defaultMaxRequestBytes,
+		dispatcher:  dispatcher,
 		logger:      logger,
 		ready:       make(chan struct{}),
 	}
@@ -45,7 +51,7 @@ func NewPongServer(listen string, readTimeout time.Duration, logger *slog.Logger
 
 // Run listens and serves connections until ctx is cancelled, then closes the
 // listener and returns.
-func (s *PongServer) Run(ctx context.Context) error {
+func (s *TCPListener) Run(ctx context.Context) error {
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", s.listen)
 	if err != nil {
@@ -53,7 +59,7 @@ func (s *PongServer) Run(ctx context.Context) error {
 	}
 	s.addr = ln.Addr()
 	close(s.ready)
-	s.logger.Info("pong_server listening", slog.String("addr", ln.Addr().String()))
+	s.logger.Info("tcp_listener listening", slog.String("addr", ln.Addr().String()))
 
 	// Close the listener on cancellation so Accept unblocks.
 	go func() {
@@ -67,7 +73,7 @@ func (s *PongServer) Run(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return nil
 			}
-			s.logger.Warn("pong_server accept error", slog.Any("error", err))
+			s.logger.Warn("tcp_listener accept error", slog.Any("error", err))
 			continue
 		}
 		go s.handle(ctx, conn)
@@ -76,16 +82,16 @@ func (s *PongServer) Run(ctx context.Context) error {
 
 // Ready returns a channel closed once the listener is bound. After it is
 // closed, Addr returns the bound address.
-func (s *PongServer) Ready() <-chan struct{} {
+func (s *TCPListener) Ready() <-chan struct{} {
 	return s.ready
 }
 
 // Addr returns the bound address; only valid after Ready is closed.
-func (s *PongServer) Addr() net.Addr {
+func (s *TCPListener) Addr() net.Addr {
 	return s.addr
 }
 
-func (s *PongServer) handle(ctx context.Context, conn net.Conn) {
+func (s *TCPListener) handle(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 
 	// Close the connection when the server shuts down.
@@ -117,36 +123,20 @@ func (s *PongServer) handle(ctx context.Context, conn net.Conn) {
 			return
 		}
 
-		if err := s.writeResponse(conn, s.buildResponse(line)); err != nil {
+		if err := s.writeResponse(conn, s.dispatcher.Dispatch(line)); err != nil {
 			return
 		}
 	}
 }
 
 // writeResponse encodes and writes a single newline-framed response.
-func (s *PongServer) writeResponse(conn net.Conn, resp protocol.Response) error {
+func (s *TCPListener) writeResponse(conn net.Conn, resp protocol.Response) error {
 	out, err := protocol.EncodeResponse(resp)
 	if err != nil {
-		s.logger.Warn("pong_server encode error", slog.Any("error", err))
+		s.logger.Warn("tcp_listener encode error", slog.Any("error", err))
 		return err
 	}
 	out = append(out, '\n')
 	_, err = conn.Write(out)
 	return err
-}
-
-// buildResponse parses one request line and produces the appropriate response,
-// never panicking on malformed input.
-func (s *PongServer) buildResponse(line []byte) protocol.Response {
-	req, err := protocol.DecodeRequest(line)
-	if err != nil {
-		if errors.Is(err, protocol.ErrVersionMismatch) {
-			return protocol.NewError(req.ID, "unsupported protocol version")
-		}
-		return protocol.NewError("", "malformed request")
-	}
-	if req.Type != protocol.TypePing {
-		return protocol.NewError(req.ID, "unsupported request type")
-	}
-	return protocol.NewPong(req)
 }
