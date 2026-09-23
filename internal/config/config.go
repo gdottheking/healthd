@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 )
 
@@ -73,11 +74,13 @@ type PongServer struct {
 	ReadTimeoutMS int    `json:"read_timeout_ms"`
 }
 
-// PingProfile is a reusable bundle of the settings shared across ping targets.
-// A target references one by name (or inherits the role's default_profile) and
-// may override any individual field inline. All fields are optional here; a
-// referenced profile need only supply what its targets don't set themselves.
-type PingProfile struct {
+// MonitorParams are the tunable settings shared by every unit that drives the
+// alert state machine and by the reusable profiles. All fields are optional at
+// this layer: a target may set them inline, inherit them from a profile, or
+// pick up a default. A zero/empty value means "unset" (and so inherits), which
+// is unambiguous because interval_s/timeout_ms/failure_threshold have no valid
+// zero value.
+type MonitorParams struct {
 	IntervalS        int      `json:"interval_s,omitempty"`
 	TimeoutMS        int      `json:"timeout_ms,omitempty"`
 	FailureThreshold int      `json:"failure_threshold,omitempty"`
@@ -85,35 +88,87 @@ type PingProfile struct {
 	WindowSize       int      `json:"window_size,omitempty"`
 	MinAvailability  float64  `json:"min_availability,omitempty"`
 	Notify           []string `json:"notify,omitempty"`
+	// InsecureSkipVerify disables TLS certificate verification for HTTPS checks
+	// (url_monitor only; ping_monitor is TCP and ignores it). Opt-in and unsafe:
+	// it accepts any certificate, so use it only for self-signed endpoints on a
+	// trusted network. Once enabled by a profile it stays enabled for that
+	// profile's targets.
+	InsecureSkipVerify bool `json:"insecure_skip_verify,omitempty"`
 }
 
+// inheritFrom fills each field left unset on p with the value from src. Inline
+// values already present on p always win.
+func (p *MonitorParams) inheritFrom(src MonitorParams) {
+	if p.IntervalS == 0 {
+		p.IntervalS = src.IntervalS
+	}
+	if p.TimeoutMS == 0 {
+		p.TimeoutMS = src.TimeoutMS
+	}
+	if p.FailureThreshold == 0 {
+		p.FailureThreshold = src.FailureThreshold
+	}
+	if p.Trigger == "" {
+		p.Trigger = src.Trigger
+	}
+	if p.WindowSize == 0 {
+		p.WindowSize = src.WindowSize
+	}
+	if p.MinAvailability == 0 {
+		p.MinAvailability = src.MinAvailability
+	}
+	if len(p.Notify) == 0 {
+		p.Notify = src.Notify
+	}
+	// A bool has no "unset" state, so a profile can only turn this on; a target
+	// cannot switch off a profile that enables it.
+	p.InsecureSkipVerify = p.InsecureSkipVerify || src.InsecureSkipVerify
+}
+
+// Profile is a reusable, named bundle of MonitorParams defined once at the top
+// level and referenced by name from ping_monitor and url_monitor targets, the
+// way notify references channels.
+type Profile struct {
+	MonitorParams
+}
+
+// PingProfile is retained as an alias for backward source compatibility.
+type PingProfile = Profile
+
 // PingTarget is a single independent ping monitor within ping_monitor. Only
-// Target is required per entry; the timing/notify fields may come from a
-// referenced Profile (or the role's default_profile), with any inline field
-// here overriding the profile.
+// Target is required per entry; the params may come from a referenced Profile
+// (or the role's default_profile), with any inline field overriding it.
 type PingTarget struct {
-	Target           string   `json:"target"`
-	Profile          string   `json:"profile,omitempty"`
-	IntervalS        int      `json:"interval_s,omitempty"`
-	TimeoutMS        int      `json:"timeout_ms,omitempty"`
-	FailureThreshold int      `json:"failure_threshold,omitempty"`
-	Trigger          string   `json:"trigger,omitempty"`
-	WindowSize       int      `json:"window_size,omitempty"`
-	MinAvailability  float64  `json:"min_availability,omitempty"`
-	Notify           []string `json:"notify,omitempty"`
+	Target  string `json:"target"`
+	Profile string `json:"profile,omitempty"`
+	MonitorParams
 }
 
 // PingMonitor is the ping_monitor role config. Each entry in Targets is an
-// independent monitor with its own interval, timeout, threshold, and channels,
-// which it may inherit from a named entry in Profiles.
+// independent monitor which may inherit its params from a top-level profile.
 type PingMonitor struct {
 	Enabled bool `json:"enabled"`
-	// DefaultProfile names the profile applied to any target that does not set
-	// its own "profile". Optional; when set it must exist in Profiles.
-	DefaultProfile string `json:"default_profile,omitempty"`
-	// Profiles is a map of reusable setting bundles referenced by targets.
-	Profiles map[string]PingProfile `json:"profiles,omitempty"`
-	Targets  []PingTarget           `json:"targets"`
+	// DefaultProfile names the top-level profile applied to any target that does
+	// not set its own "profile". Optional; when set it must exist in Profiles.
+	DefaultProfile string       `json:"default_profile,omitempty"`
+	Targets        []PingTarget `json:"targets"`
+}
+
+// URLTarget is a single independent HTTP health monitor within url_monitor. Only
+// URL is required per entry; params resolve the same way as PingTarget. A check
+// succeeds on any HTTP 2xx response within timeout_ms.
+type URLTarget struct {
+	URL     string `json:"url"`
+	Profile string `json:"profile,omitempty"`
+	MonitorParams
+}
+
+// URLMonitor is the url_monitor role config. Each entry in Targets probes one
+// URL on its own schedule and drives its own alert state machine.
+type URLMonitor struct {
+	Enabled        bool        `json:"enabled"`
+	DefaultProfile string      `json:"default_profile,omitempty"`
+	Targets        []URLTarget `json:"targets"`
 }
 
 // InternetCheck is the internet_check role config.
@@ -127,6 +182,9 @@ type InternetCheck struct {
 	WindowSize       int      `json:"window_size,omitempty"`
 	MinAvailability  float64  `json:"min_availability,omitempty"`
 	Notify           []string `json:"notify"`
+	// InsecureSkipVerify disables TLS certificate verification for all HTTPS
+	// sites this role probes. Opt-in and unsafe; see MonitorParams.
+	InsecureSkipVerify bool `json:"insecure_skip_verify,omitempty"`
 }
 
 // SpeedCheck is the speed_check role config.
@@ -146,6 +204,7 @@ type SpeedCheck struct {
 type Roles struct {
 	PongServer    PongServer    `json:"pong_server"`
 	PingMonitor   PingMonitor   `json:"ping_monitor"`
+	URLMonitor    URLMonitor    `json:"url_monitor"`
 	InternetCheck InternetCheck `json:"internet_check"`
 	SpeedCheck    SpeedCheck    `json:"speed_check"`
 }
@@ -156,9 +215,12 @@ type Config struct {
 	// SummaryIntervalS is how often, in seconds, an instance running any
 	// monitoring role logs an aggregated summary. Optional; defaults to 900
 	// (15 minutes).
-	SummaryIntervalS int                `json:"summary_interval_s,omitempty"`
-	Channels         map[string]Channel `json:"channels"`
-	Roles            Roles              `json:"roles"`
+	SummaryIntervalS int `json:"summary_interval_s,omitempty"`
+	// Profiles are reusable, named MonitorParams bundles referenced by name from
+	// ping_monitor and url_monitor targets and default_profile.
+	Profiles map[string]Profile `json:"profiles,omitempty"`
+	Channels map[string]Channel `json:"channels"`
+	Roles    Roles              `json:"roles"`
 }
 
 // Load reads and parses the config file at path, then validates it. A
@@ -174,7 +236,7 @@ func Load(path string) (*Config, error) {
 	if err := dec.Decode(&c); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
-	if err := c.resolvePingProfiles(); err != nil {
+	if err := c.resolveProfiles(); err != nil {
 		return nil, err
 	}
 	c.applyDefaults()
@@ -184,67 +246,70 @@ func Load(path string) (*Config, error) {
 	return &c, nil
 }
 
-// resolvePingProfiles folds each ping target's referenced profile (or the
-// role's default_profile) into the target, so downstream defaulting and
-// validation see fully-resolved targets. An inline field on the target wins
-// over the profile; the profile fills only the fields the target leaves unset.
-// It runs before applyDefaults so profile-supplied values are treated the same
-// as inline ones. Referencing an undefined profile is an error.
-func (c *Config) resolvePingProfiles() error {
-	pm := &c.Roles.PingMonitor
-	if !pm.Enabled {
-		return nil
-	}
-	if pm.DefaultProfile != "" {
-		if _, ok := pm.Profiles[pm.DefaultProfile]; !ok {
-			return fmt.Errorf("role ping_monitor: default_profile %q is not defined in profiles", pm.DefaultProfile)
+// profileRef points at one target's params, the profile it names (empty means
+// use the role default), and a human label for error messages.
+type profileRef struct {
+	who     string
+	profile string
+	params  *MonitorParams
+}
+
+// resolveProfiles folds the referenced top-level profile (or the role's
+// default_profile) into every ping_monitor and url_monitor target, so
+// downstream defaulting and validation see fully-resolved targets. Inline
+// fields win over the profile; the profile fills only unset fields. It runs
+// before applyDefaults so profile-supplied values are treated like inline ones.
+// Referencing an undefined profile or default_profile is an error.
+func (c *Config) resolveProfiles() error {
+	if c.Roles.PingMonitor.Enabled {
+		pm := &c.Roles.PingMonitor
+		refs := make([]profileRef, len(pm.Targets))
+		for i := range pm.Targets {
+			t := &pm.Targets[i]
+			refs[i] = profileRef{who: fmt.Sprintf("target %d (%q)", i, t.Target), profile: t.Profile, params: &t.MonitorParams}
+		}
+		if err := c.resolveProfileRefs("ping_monitor", pm.DefaultProfile, refs); err != nil {
+			return err
 		}
 	}
-	for i := range pm.Targets {
-		t := &pm.Targets[i]
-		name := t.Profile
-		if name == "" {
-			name = pm.DefaultProfile
+	if c.Roles.URLMonitor.Enabled {
+		um := &c.Roles.URLMonitor
+		refs := make([]profileRef, len(um.Targets))
+		for i := range um.Targets {
+			t := &um.Targets[i]
+			refs[i] = profileRef{who: fmt.Sprintf("target %d (%q)", i, t.URL), profile: t.Profile, params: &t.MonitorParams}
 		}
-		if name == "" {
-			continue // no profile: inline-only target (backward compatible)
+		if err := c.resolveProfileRefs("url_monitor", um.DefaultProfile, refs); err != nil {
+			return err
 		}
-		p, ok := pm.Profiles[name]
-		if !ok {
-			return fmt.Errorf("role ping_monitor target %d (%q): profile %q is not defined in profiles", i, t.Target, name)
-		}
-		mergeProfile(t, p)
 	}
 	return nil
 }
 
-// mergeProfile copies each profile field into t where t leaves it unset. A
-// zero/empty inline value means "unset" and inherits from the profile; since
-// interval_s/timeout_ms/failure_threshold have no meaningful zero value
-// (validation requires them positive), this cleanly distinguishes override
-// from inherit.
-func mergeProfile(t *PingTarget, p PingProfile) {
-	if t.IntervalS == 0 {
-		t.IntervalS = p.IntervalS
+// resolveProfileRefs validates the role's default_profile and each target's
+// profile against the top-level profiles map, then merges the chosen profile
+// into each target's params.
+func (c *Config) resolveProfileRefs(role, defaultProfile string, refs []profileRef) error {
+	if defaultProfile != "" {
+		if _, ok := c.Profiles[defaultProfile]; !ok {
+			return fmt.Errorf("role %s: default_profile %q is not defined in profiles", role, defaultProfile)
+		}
 	}
-	if t.TimeoutMS == 0 {
-		t.TimeoutMS = p.TimeoutMS
+	for _, r := range refs {
+		name := r.profile
+		if name == "" {
+			name = defaultProfile
+		}
+		if name == "" {
+			continue // no profile: inline-only target (backward compatible)
+		}
+		p, ok := c.Profiles[name]
+		if !ok {
+			return fmt.Errorf("role %s %s: profile %q is not defined in profiles", role, r.who, name)
+		}
+		r.params.inheritFrom(p.MonitorParams)
 	}
-	if t.FailureThreshold == 0 {
-		t.FailureThreshold = p.FailureThreshold
-	}
-	if t.Trigger == "" {
-		t.Trigger = p.Trigger
-	}
-	if t.WindowSize == 0 {
-		t.WindowSize = p.WindowSize
-	}
-	if t.MinAvailability == 0 {
-		t.MinAvailability = p.MinAvailability
-	}
-	if len(t.Notify) == 0 {
-		t.Notify = p.Notify
-	}
+	return nil
 }
 
 // applyDefaults fills in sensible defaults for optional fields.
@@ -274,11 +339,10 @@ func (c *Config) applyDefaults() {
 	// defaults to consecutive; window_size is defaulted in both modes so the
 	// availability rate is always tracked.
 	for i := range c.Roles.PingMonitor.Targets {
-		t := &c.Roles.PingMonitor.Targets[i]
-		if t.FailureThreshold == 0 {
-			t.FailureThreshold = 1
-		}
-		applyTriggerDefaults(&t.Trigger, &t.WindowSize)
+		applyParamDefaults(&c.Roles.PingMonitor.Targets[i].MonitorParams)
+	}
+	for i := range c.Roles.URLMonitor.Targets {
+		applyParamDefaults(&c.Roles.URLMonitor.Targets[i].MonitorParams)
 	}
 	if c.Roles.InternetCheck.FailureThreshold == 0 {
 		c.Roles.InternetCheck.FailureThreshold = 1
@@ -288,6 +352,16 @@ func (c *Config) applyDefaults() {
 		c.Roles.SpeedCheck.FailureThreshold = 1
 	}
 	applyTriggerDefaults(&c.Roles.SpeedCheck.Trigger, &c.Roles.SpeedCheck.WindowSize)
+}
+
+// applyParamDefaults fills the state-machine defaults for one target's params:
+// failure_threshold defaults to 1, and trigger/window_size are defaulted so the
+// availability rate is always tracked.
+func applyParamDefaults(p *MonitorParams) {
+	if p.FailureThreshold == 0 {
+		p.FailureThreshold = 1
+	}
+	applyTriggerDefaults(&p.Trigger, &p.WindowSize)
 }
 
 // applyTriggerDefaults fills the trigger mode and a default rolling-window size
@@ -416,6 +490,36 @@ func (c *Config) validateRoles() error {
 		}
 	}
 
+	if c.Roles.URLMonitor.Enabled {
+		if len(c.Roles.URLMonitor.Targets) == 0 {
+			return fmt.Errorf("role url_monitor: targets must be non-empty")
+		}
+		for i, tgt := range c.Roles.URLMonitor.Targets {
+			who := fmt.Sprintf("target %d (%q)", i, tgt.URL)
+			if tgt.URL == "" {
+				return fmt.Errorf("role url_monitor %s: url is required", who)
+			}
+			if err := validateHTTPURL(tgt.URL); err != nil {
+				return fmt.Errorf("role url_monitor %s: %w", who, err)
+			}
+			if tgt.IntervalS <= 0 {
+				return fmt.Errorf("role url_monitor %s: interval_s must be > 0", who)
+			}
+			if tgt.TimeoutMS <= 0 {
+				return fmt.Errorf("role url_monitor %s: timeout_ms must be > 0", who)
+			}
+			if tgt.FailureThreshold < 1 {
+				return fmt.Errorf("role url_monitor %s: failure_threshold must be >= 1", who)
+			}
+			if err := validateTrigger("url_monitor "+who, tgt.Trigger, tgt.WindowSize, tgt.MinAvailability); err != nil {
+				return err
+			}
+			if err := c.checkNotify("url_monitor "+who, tgt.Notify); err != nil {
+				return err
+			}
+		}
+	}
+
 	if c.Roles.InternetCheck.Enabled {
 		r := c.Roles.InternetCheck
 		if len(r.Sites) == 0 {
@@ -478,6 +582,21 @@ func validateTrigger(role, trigger string, windowSize int, minAvailability float
 		}
 	default:
 		return fmt.Errorf("role %s: unknown trigger %q", role, trigger)
+	}
+	return nil
+}
+
+// validateHTTPURL checks that raw is a parseable absolute http(s) URL.
+func validateHTTPURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid url: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("url scheme must be http or https, got %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("url must include a host")
 	}
 	return nil
 }

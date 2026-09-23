@@ -167,13 +167,13 @@ func TestPingMonitorMultiTargetValid(t *testing.T) {
 func TestPingMonitorProfilesResolve(t *testing.T) {
 	body := `{
       "channels": { "log": { "type": "console" }, "hook": { "type": "webhook", "url": "https://x/h", "timeout_ms": 1000 } },
+      "profiles": {
+        "standard": { "interval_s": 30, "timeout_ms": 2000, "failure_threshold": 3, "notify": ["log"] },
+        "fast":     { "interval_s": 15, "timeout_ms": 1000, "failure_threshold": 2, "notify": ["hook"] }
+      },
       "roles": { "ping_monitor": {
         "enabled": true,
         "default_profile": "standard",
-        "profiles": {
-          "standard": { "interval_s": 30, "timeout_ms": 2000, "failure_threshold": 3, "notify": ["log"] },
-          "fast":     { "interval_s": 15, "timeout_ms": 1000, "failure_threshold": 2, "notify": ["hook"] }
-        },
         "targets": [
           { "target": "a:1" },
           { "target": "b:1", "profile": "fast" },
@@ -209,9 +209,9 @@ func TestPingMonitorProfilesResolve(t *testing.T) {
 func TestPingMonitorUndefinedProfile(t *testing.T) {
 	body := `{
       "channels": { "log": { "type": "console" } },
+      "profiles": { "standard": { "interval_s": 30, "timeout_ms": 2000, "notify": ["log"] } },
       "roles": { "ping_monitor": {
         "enabled": true,
-        "profiles": { "standard": { "interval_s": 30, "timeout_ms": 2000, "notify": ["log"] } },
         "targets": [ { "target": "a:1", "profile": "ghost" } ]
       } }
     }`
@@ -227,10 +227,10 @@ func TestPingMonitorUndefinedProfile(t *testing.T) {
 func TestPingMonitorUndefinedDefaultProfile(t *testing.T) {
 	body := `{
       "channels": { "log": { "type": "console" } },
+      "profiles": { "standard": { "interval_s": 30, "timeout_ms": 2000, "notify": ["log"] } },
       "roles": { "ping_monitor": {
         "enabled": true,
         "default_profile": "missing",
-        "profiles": { "standard": { "interval_s": 30, "timeout_ms": 2000, "notify": ["log"] } },
         "targets": [ { "target": "a:1" } ]
       } }
     }`
@@ -245,16 +245,132 @@ func TestPingMonitorProfileMissingRequiredFieldStillCaught(t *testing.T) {
 	// validation must still flag it after resolution.
 	body := `{
       "channels": { "log": { "type": "console" } },
+      "profiles": { "p": { "interval_s": 30, "notify": ["log"] } },
       "roles": { "ping_monitor": {
         "enabled": true,
         "default_profile": "p",
-        "profiles": { "p": { "interval_s": 30, "notify": ["log"] } },
         "targets": [ { "target": "a:1" } ]
       } }
     }`
 	_, err := Load(writeConfig(t, body))
 	if err == nil || !strings.Contains(err.Error(), "timeout_ms") {
 		t.Fatalf("expected timeout_ms error after profile resolution, got %v", err)
+	}
+}
+
+func TestURLMonitorResolvesAndValidates(t *testing.T) {
+	body := `{
+      "channels": { "log": { "type": "console" } },
+      "profiles": {
+        "web":  { "interval_s": 30, "timeout_ms": 5000, "failure_threshold": 2, "notify": ["log"] },
+        "fast": { "interval_s": 5,  "timeout_ms": 1000, "failure_threshold": 1, "notify": ["log"] }
+      },
+      "roles": { "url_monitor": {
+        "enabled": true,
+        "default_profile": "web",
+        "targets": [
+          { "url": "http://svc.local/health/live" },
+          { "url": "https://svc.local/health/ready", "profile": "fast", "failure_threshold": 3 }
+        ]
+      } }
+    }`
+	cfg, err := Load(writeConfig(t, body))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	tg := cfg.Roles.URLMonitor.Targets
+	if tg[0].IntervalS != 30 || tg[0].TimeoutMS != 5000 || tg[0].FailureThreshold != 2 || tg[0].Notify[0] != "log" {
+		t.Fatalf("url target 0 not resolved from web profile: %+v", tg[0])
+	}
+	// fast profile supplies interval/timeout; inline failure_threshold overrides.
+	if tg[1].IntervalS != 5 || tg[1].TimeoutMS != 1000 || tg[1].FailureThreshold != 3 {
+		t.Fatalf("url target 1 override not applied: %+v", tg[1])
+	}
+}
+
+func TestURLMonitorRejectsBadURL(t *testing.T) {
+	body := `{
+      "channels": { "log": { "type": "console" } },
+      "roles": { "url_monitor": { "enabled": true, "targets": [
+        { "url": "ftp://svc.local/x", "interval_s": 5, "timeout_ms": 1000, "notify": ["log"] }
+      ] } }
+    }`
+	_, err := Load(writeConfig(t, body))
+	if err == nil || !strings.Contains(err.Error(), "scheme must be http or https") {
+		t.Fatalf("expected scheme error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "ftp://svc.local/x") {
+		t.Fatalf("error should identify the offending target: %v", err)
+	}
+}
+
+func TestURLMonitorMissingURL(t *testing.T) {
+	body := `{
+      "channels": { "log": { "type": "console" } },
+      "roles": { "url_monitor": { "enabled": true, "targets": [
+        { "interval_s": 5, "timeout_ms": 1000, "notify": ["log"] }
+      ] } }
+    }`
+	_, err := Load(writeConfig(t, body))
+	if err == nil || !strings.Contains(err.Error(), "url is required") {
+		t.Fatalf("expected url required error, got %v", err)
+	}
+}
+
+func TestProfilesSharedAcrossRoles(t *testing.T) {
+	// One top-level profile referenced by both ping_monitor and url_monitor.
+	body := `{
+      "channels": { "log": { "type": "console" } },
+      "profiles": { "common": { "interval_s": 20, "timeout_ms": 2000, "failure_threshold": 2, "notify": ["log"] } },
+      "roles": {
+        "ping_monitor": { "enabled": true, "default_profile": "common", "targets": [ { "target": "a:1" } ] },
+        "url_monitor":  { "enabled": true, "default_profile": "common", "targets": [ { "url": "http://a/health" } ] }
+      }
+    }`
+	cfg, err := Load(writeConfig(t, body))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Roles.PingMonitor.Targets[0].IntervalS != 20 || cfg.Roles.URLMonitor.Targets[0].IntervalS != 20 {
+		t.Fatalf("shared profile not applied to both roles: ping=%+v url=%+v",
+			cfg.Roles.PingMonitor.Targets[0], cfg.Roles.URLMonitor.Targets[0])
+	}
+}
+
+func TestInsecureSkipVerifyResolves(t *testing.T) {
+	body := `{
+      "channels": { "log": { "type": "console" } },
+      "profiles": {
+        "insecure_web": { "interval_s": 30, "timeout_ms": 5000, "notify": ["log"], "insecure_skip_verify": true }
+      },
+      "roles": {
+        "url_monitor": {
+          "enabled": true,
+          "default_profile": "insecure_web",
+          "targets": [
+            { "url": "https://self-signed.local/health" },
+            { "url": "https://public.example/health", "timeout_ms": 3000 }
+          ]
+        },
+        "internet_check": {
+          "enabled": true,
+          "sites": ["https://self-signed.local"],
+          "interval_s": 60, "timeout_ms": 5000, "failure_threshold": 1,
+          "notify": ["log"],
+          "insecure_skip_verify": true
+        }
+      }
+    }`
+	cfg, err := Load(writeConfig(t, body))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	ut := cfg.Roles.URLMonitor.Targets
+	if !ut[0].InsecureSkipVerify || !ut[1].InsecureSkipVerify {
+		t.Fatalf("url targets should inherit insecure_skip_verify from the profile: %+v", ut)
+	}
+	if !cfg.Roles.InternetCheck.InsecureSkipVerify {
+		t.Fatalf("internet_check should carry role-level insecure_skip_verify")
 	}
 }
 

@@ -3,7 +3,6 @@ package roles
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"time"
@@ -94,20 +93,5 @@ func (c *InternetCheck) runCheck(ctx context.Context) {
 func (c *InternetCheck) checkSite(ctx context.Context, site string) error {
 	reqCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, site, nil)
-	if err != nil {
-		return fmt.Errorf("request: %w", err)
-	}
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("get: %w", err)
-	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("non-2xx status: %d", resp.StatusCode)
-	}
-	return nil
+	return httpProbe(reqCtx, c.client, site)
 }

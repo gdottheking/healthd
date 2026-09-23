@@ -154,7 +154,7 @@ func buildRoles(cfg *config.Config, dispatcher *notify.Dispatcher, registry *mon
 	// An instance is "monitoring" if it runs any role that observes hosts and
 	// feeds the registry. Such an instance both logs a periodic aggregated
 	// summary and answers get-summary requests.
-	monitoring := cfg.Roles.PingMonitor.Enabled || cfg.Roles.InternetCheck.Enabled || cfg.Roles.SpeedCheck.Enabled
+	monitoring := cfg.Roles.PingMonitor.Enabled || cfg.Roles.URLMonitor.Enabled || cfg.Roles.InternetCheck.Enabled || cfg.Roles.SpeedCheck.Enabled
 
 	if cfg.Roles.PongServer.Enabled {
 		r := cfg.Roles.PongServer
@@ -187,16 +187,32 @@ func buildRoles(cfg *config.Config, dispatcher *notify.Dispatcher, registry *mon
 		active["ping_monitor"] = roles.NewPingMonitor(targets, dispatcher, registry, logger)
 	}
 
+	if cfg.Roles.URLMonitor.Enabled {
+		targets := make([]roles.URLTarget, 0, len(cfg.Roles.URLMonitor.Targets))
+		for _, t := range cfg.Roles.URLMonitor.Targets {
+			targets = append(targets, roles.URLTarget{
+				URL:                t.URL,
+				Interval:           time.Duration(t.IntervalS) * time.Second,
+				Timeout:            time.Duration(t.TimeoutMS) * time.Millisecond,
+				Channels:           t.Notify,
+				Mon:                monitorConfig(t.Trigger, t.WindowSize, t.FailureThreshold, t.MinAvailability),
+				InsecureSkipVerify: t.InsecureSkipVerify,
+			})
+		}
+		active["url_monitor"] = roles.NewURLMonitor(targets, dispatcher, registry, logger)
+	}
+
 	if cfg.Roles.InternetCheck.Enabled {
 		r := cfg.Roles.InternetCheck
+		timeout := time.Duration(r.TimeoutMS) * time.Millisecond
 		active["internet_check"] = roles.NewInternetCheck(
 			r.Sites,
 			time.Duration(r.IntervalS)*time.Second,
-			time.Duration(r.TimeoutMS)*time.Millisecond,
+			timeout,
 			monitorConfig(r.Trigger, r.WindowSize, r.FailureThreshold, r.MinAvailability),
 			r.Notify,
 			dispatcher,
-			nil,
+			roles.NewHTTPClient(timeout, r.InsecureSkipVerify),
 			registry,
 			logger,
 		)

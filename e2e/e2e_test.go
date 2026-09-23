@@ -14,6 +14,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -333,6 +335,52 @@ func TestPingMonitorHealthy(t *testing.T) {
 	}
 }
 
+// url_monitor probes a live HTTP health endpoint (served from the test process)
+// and stays HEALTHY, using a top-level profile via default_profile. Proves the
+// binary resolves the url_monitor role and its 2xx-is-healthy probe end-to-end.
+func TestURLMonitorHealthy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	addr := "127.0.0.1:19013"
+	cfg := `{
+      "retry": { "max_attempts": 1, "base_delay_ms": 0 },
+      "profiles": { "web": { "interval_s": 1, "timeout_ms": 1000, "failure_threshold": 1, "notify": ["log"] } },
+      "channels": { "log": { "type": "console" } },
+      "roles": {
+        "pong_server": { "enabled": true, "listen": "` + addr + `", "read_timeout_ms": 2000 },
+        "url_monitor": {
+          "enabled": true,
+          "default_profile": "web",
+          "targets": [ { "url": "` + srv.URL + `/health/live" } ]
+        }
+      }
+    }`
+	_, out := launch(t, writeConfig(t, cfg))
+	waitForListen(t, addr, 3*time.Second)
+	time.Sleep(3 * time.Second)
+
+	logs := out()
+	if strings.Contains(logs, "UNHEALTHY") {
+		t.Errorf("url_monitor emitted a false UNHEALTHY alert:\n%s", logs)
+	}
+	if strings.Contains(logs, "url_monitor check failed") {
+		t.Errorf("url_monitor reported a failed check against a healthy endpoint:\n%s", logs)
+	}
+
+	// The monitoring instance answers get-summary and includes the url unit.
+	line := sendLine(t, addr, `{"version":"0.1","id":"u","type":"get-summary","payload":{}}`)
+	var r summaryResp
+	if err := json.Unmarshal([]byte(line), &r); err != nil {
+		t.Fatalf("decode summary %q: %v", line, err)
+	}
+	if r.Summary == nil || len(r.Summary.Units) != 1 || !strings.HasPrefix(r.Summary.Units[0].Name, "url_monitor:") {
+		t.Fatalf("expected one url_monitor unit in summary, got %+v", r.Summary)
+	}
+}
+
 // ping_monitor with reusable profiles + default_profile: targets that inherit
 // from a profile monitor a healthy local server without false alerts, proving
 // the binary resolves profiles end-to-end.
@@ -340,15 +388,15 @@ func TestPingMonitorProfiles(t *testing.T) {
 	addr := "127.0.0.1:19012"
 	cfg := `{
       "retry": { "max_attempts": 1, "base_delay_ms": 0 },
+      "profiles": {
+        "std": { "interval_s": 1, "timeout_ms": 1000, "failure_threshold": 1, "notify": ["log"] }
+      },
       "channels": { "log": { "type": "console" } },
       "roles": {
         "pong_server": { "enabled": true, "listen": "` + addr + `", "read_timeout_ms": 2000 },
         "ping_monitor": {
           "enabled": true,
           "default_profile": "std",
-          "profiles": {
-            "std": { "interval_s": 1, "timeout_ms": 1000, "failure_threshold": 1, "notify": ["log"] }
-          },
           "targets": [
             { "target": "` + addr + `" },
             { "target": "` + addr + `", "profile": "std", "failure_threshold": 2 }

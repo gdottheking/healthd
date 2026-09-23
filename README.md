@@ -34,6 +34,15 @@ All roles are optional and enabled per the config file.
   alert. No repeat alerts while it stays in the same state. Each target runs
   on its own goroutine and does not interfere with the others; the alert
   Detail names the specific target.
+- **url_monitor** — HTTP client. Monitors one or more `targets`, each an
+  independent monitor of a single URL (e.g. a `/health/live` endpoint) with its
+  own interval, timeout, threshold, and notify channels. Every `interval_s` it
+  issues a GET; an HTTP 2xx within `timeout_ms` is a success, anything else
+  (non-2xx, connection error, or timeout) a failure. Uses the same fire-once
+  alert/recovery state machine, one goroutine per target, with the alert Detail
+  naming the specific URL. (Unlike `internet_check`, which round-robins a shared
+  list to answer "is the internet up", `url_monitor` tracks each endpoint
+  independently.)
 - **internet_check** — HTTP client. Each cycle probes the next site in the
   `sites` list in round-robin order. An HTTP 2xx within `timeout_ms` is a
   success; anything else (including timeout) is a failure. Uses the same
@@ -177,6 +186,7 @@ Config is JSON. Path is set with `-config` (default `./config.json`). See
 |----------------------|--------|-------|
 | `retry`              | object | Dispatcher retry policy. |
 | `summary_interval_s` | int    | Aggregated-summary cadence for monitoring instances. Optional; defaults to 900 (15 min). Must be > 0. |
+| `profiles`           | object | Optional. Reusable, named bundles of monitor settings referenced by `ping_monitor` and `url_monitor`. See [Profiles](#profiles). |
 | `channels`           | object | Map of channel name to channel definition. |
 | `roles`              | object | Role definitions. |
 
@@ -203,6 +213,35 @@ Config is JSON. Path is set with `-config` (default `./config.json`). See
 | `username`     | string   | email, smsgate    | Required for smsgate. |
 | `password_env` | string   | email, smsgate    | Name of the env var holding the secret. Required. |
 
+### Profiles
+
+`profiles` is a top-level map of reusable, named setting bundles referenced by
+name from `ping_monitor` and `url_monitor` targets — the same way `notify`
+references named `channels`. A single profile can be shared across both roles.
+
+Each `profiles[name]` entry may set any of: `interval_s`, `timeout_ms`,
+`failure_threshold`, `trigger`, `window_size`, `min_availability`, `notify`,
+`insecure_skip_verify` (same meanings as in the target tables below). All are
+optional. `insecure_skip_verify` applies only to HTTP roles (`url_monitor`);
+`ping_monitor` is TCP and ignores it. Because a bool has no "unset" state, a
+profile can only turn `insecure_skip_verify` on — a target cannot switch off a
+profile that enables it.
+
+A target resolves each setting in this order: **inline field on the target →
+its `profile` → the role's `default_profile`**. An inline field always
+overrides the profile, and a profile only fills fields the target leaves unset.
+A target with no `profile` and no `default_profile` must supply every required
+field inline (the original, still-supported form). Referencing an undefined
+profile (via a target's `profile` or a role's `default_profile`) aborts startup.
+
+```json
+"profiles": {
+  "standard": { "interval_s": 30, "timeout_ms": 2000, "failure_threshold": 3, "notify": ["log"] },
+  "fast":     { "interval_s": 15, "timeout_ms": 1000, "failure_threshold": 2, "notify": ["log"] },
+  "web":      { "interval_s": 30, "timeout_ms": 5000, "failure_threshold": 2, "notify": ["log"] }
+}
+```
+
 ### `roles.pong_server`
 
 | Key               | Type   | Notes |
@@ -213,33 +252,21 @@ Config is JSON. Path is set with `-config` (default `./config.json`). See
 
 ### `roles.ping_monitor`
 
-Each entry in `targets` is an independent monitor. To avoid repeating the same
-settings on every target, define reusable **profiles** and reference them by
-name — the same way `notify` references named `channels`.
+Each entry in `targets` is an independent monitor. Targets may inherit their
+settings from a top-level [profile](#profiles).
 
 | Key               | Type     | Notes |
 |-------------------|----------|-------|
 | `enabled`         | bool     | |
-| `profiles`        | object   | Optional. Map of profile name to a bundle of the shared target settings. |
-| `default_profile` | string   | Optional. Profile applied to any target that omits `profile`. Must exist in `profiles`. |
+| `default_profile` | string   | Optional. Top-level profile applied to any target that omits `profile`. Must exist in `profiles`. |
 | `targets`         | object[] | Required, non-empty. One independent monitor per entry. |
-
-A target resolves its settings in this order: **inline field on the target →
-its `profile` → the role's `default_profile`**. An inline field always
-overrides the profile, and a profile only fills fields the target leaves unset.
-A target with no `profile` and no `default_profile` must supply every required
-field inline (the original, still-supported form).
-
-Each `profiles[name]` entry may set any of: `interval_s`, `timeout_ms`,
-`failure_threshold`, `trigger`, `window_size`, `min_availability`, `notify`
-(same meanings as below).
 
 Each `targets[]` entry:
 
 | Key                 | Type     | Notes |
 |---------------------|----------|-------|
 | `target`            | string   | Required, `host:port`. |
-| `profile`           | string   | Optional. Name of a `profiles` entry to inherit from. Falls back to `default_profile`. Must exist in `profiles`. |
+| `profile`           | string   | Optional. Name of a top-level `profiles` entry to inherit from. Falls back to `default_profile`. |
 | `interval_s`        | int      | > 0 after resolution (from target or profile). |
 | `timeout_ms`        | int      | > 0 after resolution. |
 | `failure_threshold` | int      | >= 1 (defaults to 1 if unset everywhere). Used by the `consecutive` trigger. |
@@ -248,16 +275,13 @@ Each `targets[]` entry:
 | `min_availability` | number   | Availability percentage (0–100) below which `availability` alerts. Required for `availability`. |
 | `notify`            | string[] | Channel names; each must exist in `channels`. |
 
-Example — two profiles, a default, and a per-target override:
+Example (with the `profiles` block above) — a default, an explicit profile, and
+a per-target override:
 
 ```json
 "ping_monitor": {
   "enabled": true,
   "default_profile": "standard",
-  "profiles": {
-    "standard": { "interval_s": 30, "timeout_ms": 2000, "failure_threshold": 3, "notify": ["log"] },
-    "fast":     { "interval_s": 15, "timeout_ms": 1000, "failure_threshold": 2, "notify": ["log"] }
-  },
   "targets": [
     { "target": "10.0.0.5:9000" },
     { "target": "10.0.0.6:9000", "profile": "fast" },
@@ -268,6 +292,39 @@ Example — two profiles, a default, and a per-target override:
 
 Here `10.0.0.5` uses `standard`, `10.0.0.6` uses `fast`, and `10.0.0.7` uses
 `standard` but bumps `failure_threshold` to 5.
+
+### `roles.url_monitor`
+
+Each entry in `targets` is an independent monitor of one HTTP(S) URL; an HTTP
+2xx within `timeout_ms` is healthy. Same profile mechanism as `ping_monitor`.
+
+| Key               | Type     | Notes |
+|-------------------|----------|-------|
+| `enabled`         | bool     | |
+| `default_profile` | string   | Optional. Top-level profile applied to any target that omits `profile`. Must exist in `profiles`. |
+| `targets`         | object[] | Required, non-empty. One independent monitor per entry. |
+
+Each `targets[]` entry takes the same params as a `ping_monitor` target, except
+`target` is replaced by:
+
+| Key       | Type   | Notes |
+|-----------|--------|-------|
+| `url`     | string | Required. Absolute `http`/`https` URL, e.g. `http://svc.local/health/live`. |
+| `profile` | string | Optional. Top-level profile to inherit from; falls back to `default_profile`. |
+| `insecure_skip_verify` | bool | Optional. Disables TLS certificate verification for this target's HTTPS requests, so a self-signed cert is accepted. **Unsafe** — accepts any certificate (MITM risk); use only on a trusted network. |
+
+Example:
+
+```json
+"url_monitor": {
+  "enabled": true,
+  "default_profile": "web",
+  "targets": [
+    { "url": "http://192.168.1.7:8080/health/live" },
+    { "url": "https://www.example.com/health/live", "profile": "fast" }
+  ]
+}
+```
 
 ### `roles.internet_check`
 
@@ -282,6 +339,7 @@ Here `10.0.0.5` uses `standard`, `10.0.0.6` uses `fast`, and `10.0.0.7` uses
 | `window_size`      | int      | See ping_monitor; defaults to 20 (availability always tracked). |
 | `min_availability` | number   | Availability percentage (0–100); required for `availability`. |
 | `notify`            | string[] | Channel names; each must exist in `channels`. |
+| `insecure_skip_verify` | bool | Optional. Disables TLS verification for **all** HTTPS sites this role probes. **Unsafe** (accepts any cert); trusted networks only. |
 
 ### `roles.speed_check`
 
